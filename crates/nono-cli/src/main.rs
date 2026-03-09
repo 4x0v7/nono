@@ -481,7 +481,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
     // Pre-exec trust scan: verify instruction files before the agent reads them.
     // Must run BEFORE sandbox application so we can still read bundles and policy.
     // The trust_policy and scan_result are preserved for macOS deny rule injection.
-    let scan_result = if trust_override {
+    let (trust_policy, scan_result) = if trust_override {
         if !silent {
             eprintln!(
                 "  {}",
@@ -489,7 +489,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
                     .yellow()
             );
         }
-        None
+        (None, None)
     } else {
         let trust_policy = trust_scan::load_scan_policy(&scan_root, false)?;
         let result = trust_scan::run_pre_exec_scan(&scan_root, &trust_policy, silent)?;
@@ -539,7 +539,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
             }
         }
 
-        Some(result)
+        (Some(trust_policy), Some(result))
     };
     let _ = &scan_result; // suppress unused warning on non-macOS
 
@@ -551,7 +551,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
         prepared.caps.set_extensions_enabled(true);
     }
 
-    let trust_scan_verified = scan_result.as_ref().is_some_and(|r| r.verified > 0);
+    let trust_interception_active = trust_interception_active(trust_policy.as_ref());
 
     // Extract write-protected paths (signed instruction files) for diagnostic output
     let verified_protected_paths = scan_result
@@ -606,24 +606,37 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
     let mut merged_globs = prepared.rollback_exclude_globs;
     merged_globs.extend(cli_exclude_globs);
 
+    // Select execution strategy. Supervised mode is needed when any feature
+    // requires a parent process: rollback snapshots, network proxy, capability
+    // elevation (seccomp + PTY), or trust interception. Direct mode (exec,
+    // nono disappears) gives the child native terminal access — required for
+    // TUI programs like Claude Code that call setRawMode.
+    let needs_supervised =
+        rollback || proxy_active || prepared.capability_elevation || trust_interception_active;
+    let strategy = if needs_supervised {
+        exec_strategy::ExecStrategy::Supervised
+    } else {
+        exec_strategy::ExecStrategy::Direct
+    };
+
     execute_sandboxed(
         program,
         cmd_args,
         prepared.caps,
         prepared.secrets,
         ExecutionFlags {
-            strategy: exec_strategy::ExecStrategy::Supervised,
+            strategy,
             no_diagnostics,
             rollback,
             no_rollback: run_args.no_rollback,
             no_rollback_prompt,
-            trust_override,
             no_audit,
             silent,
             rollback_all: run_args.rollback_all,
             rollback_include: run_args.rollback_include,
             scan_root,
-            trust_scan_verified,
+            trust_policy,
+            trust_interception_active,
             protected_paths: verified_protected_paths,
             rollback_exclude_patterns: merged_patterns,
             rollback_exclude_globs: merged_globs,
@@ -752,7 +765,6 @@ struct ExecutionFlags {
     no_rollback_prompt: bool,
     /// Disable audit trail recording for this session
     no_audit: bool,
-    trust_override: bool,
     silent: bool,
     /// Override all auto-exclusions (full snapshot)
     rollback_all: bool,
@@ -760,8 +772,10 @@ struct ExecutionFlags {
     rollback_include: Vec<String>,
     /// Root directory for trust policy discovery and scanning
     scan_root: std::path::PathBuf,
-    /// Whether trust scan ran and verified at least one file (crypto threads may linger)
-    trust_scan_verified: bool,
+    /// Loaded trust policy from the pre-exec scan path.
+    trust_policy: Option<nono::trust::TrustPolicy>,
+    /// Whether runtime trust interception is relevant for this session.
+    trust_interception_active: bool,
     /// Write-protected paths (signed instruction files) for diagnostic output
     protected_paths: Vec<std::path::PathBuf>,
     /// Profile-specific rollback exclusion patterns (additive on base)
@@ -801,13 +815,13 @@ impl ExecutionFlags {
             no_rollback: false,
             no_rollback_prompt: false,
             no_audit: false,
-            trust_override: false,
             silent,
             rollback_all: false,
             rollback_include: Vec::new(),
             scan_root: std::env::current_dir()
                 .map_err(|e| NonoError::SandboxInit(format!("Failed to get cwd: {e}")))?,
-            trust_scan_verified: false,
+            trust_policy: None,
+            trust_interception_active: false,
             protected_paths: Vec::new(),
             rollback_exclude_patterns: Vec::new(),
             rollback_exclude_globs: Vec::new(),
@@ -822,6 +836,10 @@ impl ExecutionFlags {
             proxy_port: None,
         })
     }
+}
+
+fn trust_interception_active(policy: Option<&nono::trust::TrustPolicy>) -> bool {
+    policy.is_some_and(|policy| !policy.instruction_patterns.is_empty())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1081,9 +1099,11 @@ fn execute_sandboxed(
     // sandbox then immediately calls execve which replaces the address space.
     let threading = if !loaded_secrets.is_empty() && !flags.proxy_active {
         exec_strategy::ThreadingContext::KeyringExpected
-    } else if flags.trust_scan_verified || flags.proxy_active || !loaded_secrets.is_empty() {
+    } else if flags.trust_interception_active || flags.proxy_active || !loaded_secrets.is_empty() {
         // Proxy uses tokio threads (parked on epoll/kqueue, safe for fork+exec).
         // Keyring threads are idle XPC dispatch workers when proxy is also active.
+        // Trust policy signature verification and runtime attestation may also
+        // leave crypto worker threads parked before we fork.
         exec_strategy::ThreadingContext::CryptoExpected
     } else {
         exec_strategy::ThreadingContext::Strict
@@ -1315,10 +1335,13 @@ fn execute_sandboxed(
                 session_id: &supervisor_session_id,
             };
 
-            let trust_interceptor = if !flags.trust_override {
-                match trust_scan::load_scan_policy(&flags.scan_root, false) {
-                    Ok(p) => {
-                        match trust_intercept::TrustInterceptor::new(p, flags.scan_root.clone()) {
+            let trust_interceptor = if flags.trust_interception_active {
+                match flags.trust_policy.clone() {
+                    Some(policy) => {
+                        match trust_intercept::TrustInterceptor::new(
+                            policy,
+                            flags.scan_root.clone(),
+                        ) {
                             Ok(interceptor) => Some(interceptor),
                             Err(e) => {
                                 tracing::warn!("Trust interceptor pattern compilation failed: {e}");
@@ -1334,18 +1357,7 @@ fn execute_sandboxed(
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("Trust policy load failed for interceptor: {e}");
-                        eprintln!(
-                            "  {}",
-                            format!(
-                                "WARNING: Runtime instruction file verification disabled \
-                                 (policy error: {e})"
-                            )
-                            .yellow()
-                        );
-                        None
-                    }
+                    None => None,
                 }
             } else {
                 None
@@ -2060,5 +2072,22 @@ mod tests {
                 proxy_credentials: vec!["github".to_string(), "openai".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn test_trust_interception_inactive_for_default_policy() {
+        let policy = nono::trust::TrustPolicy::default();
+
+        assert!(!trust_interception_active(Some(&policy)));
+    }
+
+    #[test]
+    fn test_trust_interception_active_when_instruction_patterns_exist() {
+        let policy = nono::trust::TrustPolicy {
+            instruction_patterns: vec!["SKILLS.md".to_string()],
+            ..nono::trust::TrustPolicy::default()
+        };
+
+        assert!(trust_interception_active(Some(&policy)));
     }
 }
