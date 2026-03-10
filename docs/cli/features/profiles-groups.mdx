@@ -115,6 +115,8 @@ The `network` section controls network access and credential injection:
     "proxy_allow": ["my-internal-api.example.com"],
     "port_allow": [3000],
     "proxy_credentials": ["openai", "anthropic"],
+    "external_proxy": "squid.corp:3128",
+    "external_proxy_bypass": ["git.internal.corp", "*.dev.local"],
     "custom_credentials": {
       "telegram": {
         "upstream": "https://api.telegram.org",
@@ -135,6 +137,8 @@ The `network` section controls network access and credential injection:
 | `port_allow` | Localhost TCP ports to allow bidirectional IPC (equivalent to `--allow-port`) |
 | `proxy_credentials` | Credential services to enable via reverse proxy (e.g., `openai`, `anthropic`) |
 | `custom_credentials` | Custom credential service definitions for APIs not in the built-in list |
+| `external_proxy` | External (enterprise) proxy address, e.g., `squid.corp:3128` |
+| `external_proxy_bypass` | Domains to bypass the external proxy (exact hostnames and `*.` wildcards) |
 
 #### Custom Credentials
 

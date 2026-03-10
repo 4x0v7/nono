@@ -440,6 +440,7 @@ mod tests {
             proxy_allow: vec![],
             proxy_credential: vec![],
             external_proxy: None,
+            external_proxy_bypass: vec![],
             override_deny: vec![],
             allow_command: vec![],
             block_command: vec![],
