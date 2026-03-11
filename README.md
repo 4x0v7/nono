@@ -243,6 +243,31 @@ nono run --profile my-profile -- rm /tmp/old-file.txt
 > [!WARNING]
 > Command blocking is defense-in-depth layered on top of the kernel sandbox. Commands can bypass this via `sh -c '...'` or wrapper scripts — the sandbox filesystem restrictions are the real security boundary.
 
+### Themes
+
+nono ships with multiple color themes inspired by popular terminal palettes. The default is **Catppuccin Mocha**.
+
+| Theme | Description |
+|-------|-------------|
+| `mocha` | Catppuccin Mocha -- warm dark (default) |
+| `latte` | Catppuccin Latte -- clean light |
+| `frappe` | Catppuccin Frappe -- muted dark |
+| `macchiato` | Catppuccin Macchiato -- deep vivid dark |
+| `tokyo-night` | Tokyo Night -- cool blues and purples |
+| `minimal` | Grayscale with orange accent |
+
+```bash
+# Per invocation
+nono --theme tokyo-night run --allow-cwd -- my-agent
+
+# Via environment variable
+export NONO_THEME=latte
+
+# Via config file (~/.config/nono/config.toml)
+# [ui]
+# theme = "frappe"
+```
+
 ### Audit Trail
 
 Every supervised session automatically records command, timing, exit code, network events, and cryptographic snapshot commitments as structured JSON. Opt out with `--no-audit`.

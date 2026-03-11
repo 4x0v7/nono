@@ -3,6 +3,7 @@
 //! Presents the user with a summary of changes made during the session
 //! and offers to restore to the initial state.
 
+use crate::theme;
 use colored::Colorize;
 use nono::undo::{Change, ChangeType, SnapshotManager, SnapshotManifest};
 use nono::Result;
@@ -17,6 +18,7 @@ pub fn review_and_restore(
     baseline: &SnapshotManifest,
     changes: &[Change],
 ) -> Result<bool> {
+    let t = theme::current();
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         return Ok(false);
@@ -26,8 +28,8 @@ pub fn review_and_restore(
 
     eprint!(
         "{} {}",
-        "[nono]".truecolor(204, 102, 0),
-        "Restore to initial state? [y/N]: ".white()
+        theme::fg("nono", t.brand).bold(),
+        theme::fg("Restore to initial state? [y/N]: ", t.text)
     );
     std::io::stderr().flush().ok();
 
@@ -41,23 +43,23 @@ pub fn review_and_restore(
     if answer == "y" || answer == "yes" {
         eprintln!(
             "{} {}",
-            "[nono]".truecolor(204, 102, 0),
-            "Restoring...".white()
+            theme::fg("nono", t.brand).bold(),
+            theme::fg("Restoring...", t.text)
         );
 
         let applied = manager.restore_to(baseline)?;
 
         eprintln!(
             "{} Restored {} files.",
-            "[nono]".truecolor(204, 102, 0),
+            theme::fg("nono", t.brand).bold(),
             applied.len()
         );
         Ok(true)
     } else {
         eprintln!(
             "{} {}",
-            "[nono]".truecolor(204, 102, 0),
-            "Exiting without restoring.".truecolor(150, 150, 150)
+            theme::fg("nono", t.brand).bold(),
+            theme::fg("Exiting without restoring.", t.subtext)
         );
         Ok(false)
     }
@@ -65,18 +67,19 @@ pub fn review_and_restore(
 
 /// Print details of each change
 fn print_change_details(changes: &[Change]) {
+    let t = theme::current();
     eprintln!(
         "{} {}",
-        "[nono]".truecolor(204, 102, 0),
-        "Changes:".white().bold()
+        theme::fg("nono", t.brand).bold(),
+        theme::fg("Changes:", t.text).bold()
     );
 
     for change in changes {
         let symbol = match change.change_type {
-            ChangeType::Created => "+".green(),
-            ChangeType::Modified => "~".yellow(),
-            ChangeType::Deleted => "-".red(),
-            ChangeType::PermissionsChanged => "p".truecolor(150, 150, 150),
+            ChangeType::Created => theme::fg("+", t.green),
+            ChangeType::Modified => theme::fg("~", t.yellow),
+            ChangeType::Deleted => theme::fg("-", t.red),
+            ChangeType::PermissionsChanged => theme::fg("p", t.subtext),
         };
 
         let label = match change.change_type {
@@ -99,8 +102,8 @@ fn print_change_details(changes: &[Change]) {
             "  {} {} ({}){}",
             symbol,
             change.path.display(),
-            label.truecolor(150, 150, 150),
-            size_info.truecolor(100, 100, 100)
+            theme::fg(label, t.subtext),
+            theme::fg(&size_info, t.overlay)
         );
     }
     eprintln!();

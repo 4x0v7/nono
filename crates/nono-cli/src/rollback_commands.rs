@@ -11,6 +11,7 @@ use crate::rollback_base_exclusions;
 use crate::rollback_session::{
     discover_sessions, format_bytes, load_session, remove_session, rollback_root, SessionInfo,
 };
+use crate::theme;
 use colored::Colorize;
 use nono::undo::{MerkleTree, ObjectStore, SnapshotManager};
 use nono::{NonoError, Result};
@@ -55,7 +56,8 @@ fn canonical_candidates(path: &Path) -> Vec<PathBuf> {
 
 /// Prefix used for all rollback command output
 fn prefix() -> colored::ColoredString {
-    "[nono]".truecolor(204, 102, 0)
+    let t = theme::current();
+    theme::fg("nono", t.brand).bold()
 }
 
 /// Dispatch to the appropriate rollback subcommand.
@@ -206,7 +208,7 @@ fn print_session_line(s: &SessionInfo, created: usize, modified: usize, deleted:
         "    {}  {}  {}  {}",
         s.metadata.session_id.white().bold(),
         timestamp.truecolor(100, 100, 100),
-        cmd_name.truecolor(150, 150, 150),
+        theme::fg(&cmd_name, theme::current().subtext),
         change_summary,
     );
 }
@@ -309,7 +311,10 @@ fn cmd_show(args: RollbackShowArgs) -> Result<()> {
         "{} Session {} ({})\n",
         prefix(),
         session.metadata.session_id.white().bold(),
-        session.metadata.command.join(" ").truecolor(150, 150, 150)
+        theme::fg(
+            &session.metadata.command.join(" "),
+            theme::current().subtext
+        )
     );
 
     if args.diff {
@@ -871,8 +876,16 @@ fn cmd_cleanup(args: RollbackCleanupArgs) -> Result<()> {
             eprintln!(
                 "  {} {} ({})",
                 s.metadata.session_id,
-                s.metadata.command.join(" ").truecolor(150, 150, 150),
-                format_bytes(s.disk_size).truecolor(150, 150, 150),
+                s.metadata.command.join(" ").truecolor(
+                    theme::current().subtext.0,
+                    theme::current().subtext.1,
+                    theme::current().subtext.2
+                ),
+                format_bytes(s.disk_size).truecolor(
+                    theme::current().subtext.0,
+                    theme::current().subtext.1,
+                    theme::current().subtext.2
+                ),
             );
         }
         return Ok(());
@@ -1044,7 +1057,11 @@ fn change_symbol(ct: &nono::undo::ChangeType) -> colored::ColoredString {
         nono::undo::ChangeType::Created => "+".green(),
         nono::undo::ChangeType::Modified => "~".yellow(),
         nono::undo::ChangeType::Deleted => "-".red(),
-        nono::undo::ChangeType::PermissionsChanged => "p".truecolor(150, 150, 150),
+        nono::undo::ChangeType::PermissionsChanged => "p".truecolor(
+            theme::current().subtext.0,
+            theme::current().subtext.1,
+            theme::current().subtext.2,
+        ),
     }
 }
 

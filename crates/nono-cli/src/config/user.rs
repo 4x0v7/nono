@@ -28,6 +28,16 @@ pub struct UserConfig {
     pub rollback: RollbackSettings,
     #[serde(default)]
     pub updates: UpdateSettings,
+    #[serde(default)]
+    pub ui: UiSettings,
+}
+
+/// UI display settings
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct UiSettings {
+    /// Color theme name (mocha, latte, frappe, macchiato, tokyo-night, minimal)
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// Metadata for user config

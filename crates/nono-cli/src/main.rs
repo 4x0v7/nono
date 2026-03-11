@@ -23,6 +23,7 @@ mod rollback_ui;
 mod sandbox_state;
 mod setup;
 mod terminal_approval;
+mod theme;
 mod trust_cmd;
 mod trust_intercept;
 mod trust_scan;
@@ -46,6 +47,7 @@ fn main() {
     normalize_legacy_flag_env_vars();
     let cli = Cli::parse();
     init_tracing(&cli);
+    init_theme(&cli);
 
     if let Err(e) = run(cli) {
         error!("{}", e);
@@ -67,6 +69,16 @@ fn copy_legacy_env_var(old: &str, new: &str) {
     if let Some(value) = std::env::var_os(old) {
         std::env::set_var(new, value);
     }
+}
+
+fn init_theme(cli: &Cli) {
+    // Try loading config theme (best-effort, don't fail on config errors)
+    let config_theme = config::user::load_user_config()
+        .ok()
+        .flatten()
+        .and_then(|c| c.ui.theme);
+
+    theme::init(cli.theme.as_deref(), config_theme.as_deref());
 }
 
 fn init_tracing(cli: &Cli) {
@@ -816,10 +828,10 @@ fn run_shell(args: ShellArgs, silent: bool) -> Result<()> {
     }
 
     if !silent {
-        eprintln!(
-            "{}",
-            "Exit the shell with Ctrl-D or 'exit'.".truecolor(150, 150, 150)
-        );
+        eprintln!("{}", {
+            let t = theme::current();
+            theme::fg("Exit the shell with Ctrl-D or 'exit'.", t.subtext)
+        });
         eprintln!();
     }
 

@@ -4,6 +4,7 @@
 
 use crate::cli::{AuditArgs, AuditCommands, AuditListArgs, AuditShowArgs};
 use crate::rollback_session::{discover_sessions, load_session, SessionInfo};
+use crate::theme;
 use colored::Colorize;
 use nono::undo::SnapshotManager;
 use nono::{NonoError, Result};
@@ -12,7 +13,8 @@ use std::path::{Path, PathBuf};
 
 /// Prefix used for all audit command output
 fn prefix() -> colored::ColoredString {
-    "[nono]".truecolor(204, 102, 0)
+    let t = theme::current();
+    theme::fg("nono", t.brand).bold()
 }
 
 /// Dispatch to the appropriate audit subcommand.
@@ -65,7 +67,7 @@ fn cmd_list(args: AuditListArgs) -> Result<()> {
                 "    {} {} {}",
                 s.metadata.session_id,
                 status,
-                cmd.truecolor(150, 150, 150),
+                theme::fg(&cmd, theme::current().subtext),
             );
         }
         eprintln!();
@@ -208,7 +210,10 @@ fn cmd_show(args: AuditShowArgs) -> Result<()> {
     );
     eprintln!(
         "  Command:  {}",
-        session.metadata.command.join(" ").truecolor(150, 150, 150)
+        theme::fg(
+            &session.metadata.command.join(" "),
+            theme::current().subtext
+        )
     );
     eprintln!("  Started:  {}", session.metadata.started);
     if let Some(ref ended) = session.metadata.ended {
@@ -358,7 +363,7 @@ fn session_status_label(s: &SessionInfo) -> colored::ColoredString {
     } else if s.is_stale {
         "orphaned".yellow()
     } else {
-        "completed".truecolor(150, 150, 150)
+        theme::fg("completed", theme::current().subtext)
     }
 }
 
@@ -401,7 +406,7 @@ fn change_symbol(ct: &nono::undo::ChangeType) -> colored::ColoredString {
         nono::undo::ChangeType::Created => "+".green(),
         nono::undo::ChangeType::Modified => "~".yellow(),
         nono::undo::ChangeType::Deleted => "-".red(),
-        nono::undo::ChangeType::PermissionsChanged => "p".truecolor(150, 150, 150),
+        nono::undo::ChangeType::PermissionsChanged => theme::fg("p", theme::current().subtext),
     }
 }
 

@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(long, short = 's', global = true)]
     pub silent: bool,
 
+    /// Color theme for output (mocha, latte, frappe, macchiato, tokyo-night, minimal)
+    #[arg(long, global = true, env = "NONO_THEME", value_name = "THEME")]
+    pub theme: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }

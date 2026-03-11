@@ -1,63 +1,53 @@
 //! CLI output styling for nono
+//!
+//! All colors are drawn from the active theme via `theme::current()`.
 
+use crate::theme::{self, badge, fg, Rgb};
 use colored::Colorize;
 use nono::{AccessMode, CapabilitySet, NetworkMode, NonoError, Result};
-use rand::prelude::IndexedRandom;
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 
-/// Hedgehog puns for the banner
-const QUOTES: &[&str] = &[
-    "¡Hola Nono!",
-    "Bonjour Nono !",
-    "Hallo Nono!",
-    "Ciao Nono!",
-    "Olá Nono!",
-    "こんにちは、Nono！",
-    "안녕하세요, Nono!",
-    "你好，Nono！",
-    "!مرحبًا نونو",
-    "नमस्ते नोनो!",
-    "Hej Nono!",
-    "Merhaba Nono!",
-    "Halo Nono!",
-    "Xin chào Nono!",
-    "Sawubona Nono!",
-    "Γεια σου Nono!",
-    "Привет, Nono!",
-    "Cześć Nono!",
-    "Shalom Nono!",
-    "Kamusta Nono!",
-];
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-/// Print the nono banner with hedgehog mascot
+/// Dark foreground for badge text (works on both light and dark bg colors)
+const BADGE_FG_DARK: Rgb = Rgb(30, 30, 46);
+
+/// Print a thin horizontal rule using overlay color
+fn rule() {
+    let t = theme::current();
+    eprintln!("  {}", theme::fg(&"\u{2500}".repeat(52), t.overlay));
+}
+
+// ---------------------------------------------------------------------------
+// Banner
+// ---------------------------------------------------------------------------
+
+/// Print the nono banner
 pub fn print_banner(silent: bool) {
     if silent {
         return;
     }
 
-    let quote = QUOTES
-        .choose(&mut rand::rng())
-        .unwrap_or(&"The opposite of yolo");
-
+    let t = theme::current();
     let version = env!("CARGO_PKG_VERSION");
 
-    // Hedgehog in brown/tan - 2 lines, compact
-    let hog_line1 = " \u{2584}\u{2588}\u{2584}".truecolor(139, 90, 43); //  ▄█▄ (leading space to center)
-    let hog_line2 = "\u{2580}\u{2584}^\u{2584}\u{2580}".truecolor(139, 90, 43); // ▀▄^▄▀
-
-    // Title in orange
-    let title = "  nono".truecolor(204, 102, 0).bold();
-    let ver = format!("v{}", version).white();
-
     eprintln!();
-    eprintln!(" {} {} {}", hog_line1, title, ver);
-    eprintln!(" {}  - {}", hog_line2, quote.truecolor(150, 150, 150));
-    eprintln!();
+    eprintln!(
+        "  {} {}",
+        theme::fg("nono", t.brand).bold(),
+        theme::fg(&format!("v{version}"), t.subtext),
+    );
 }
 
-/// Print the capability summary with colors
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+/// Print the capability summary
 ///
 /// When `verbose` is 0, only user-specified capabilities are shown (CLI flags
 /// and profile filesystem entries). System paths and group-resolved paths are
@@ -67,16 +57,16 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
         return;
     }
 
-    eprintln!("{}", "Capabilities:".white().bold());
+    let t = theme::current();
+
+    rule();
 
     // Filesystem capabilities
     let fs_caps = caps.fs_capabilities();
     if !fs_caps.is_empty() {
         let (user_caps, other_count) = if verbose > 0 {
-            // Show everything with source labels
             (fs_caps.to_vec(), 0)
         } else {
-            // Only show user-specified and profile capabilities
             let user: Vec<_> = fs_caps
                 .iter()
                 .filter(|c| c.source.is_user_intent())
@@ -86,65 +76,73 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
             (user, hidden)
         };
 
-        eprintln!("  {}", "Filesystem:".white());
         for cap in &user_caps {
             let kind = if cap.is_file { "file" } else { "dir" };
-            let access_str = cap.access.to_string();
-            let access_colored = match cap.access {
-                AccessMode::Read => access_str.green(),
-                AccessMode::Write => access_str.yellow(),
-                AccessMode::ReadWrite => access_str.truecolor(204, 102, 0), // orange
-            };
+            let access_badge = format_access_badge(&cap.access);
 
             if verbose > 0 {
                 let source_str = format!("{}", cap.source);
                 eprintln!(
-                    "    {} [{}] ({}) [{}]",
-                    cap.resolved.display().to_string().white(),
-                    access_colored,
-                    kind.truecolor(150, 150, 150),
-                    source_str.truecolor(100, 100, 100),
+                    "  {} {} {}",
+                    access_badge,
+                    theme::fg(&cap.resolved.display().to_string(), t.text),
+                    theme::fg(&format!("({kind}) [{source_str}]"), t.subtext),
                 );
             } else {
                 eprintln!(
-                    "    {} [{}] ({})",
-                    cap.resolved.display().to_string().white(),
-                    access_colored,
-                    kind.truecolor(150, 150, 150)
+                    "  {} {} {}",
+                    access_badge,
+                    theme::fg(&cap.resolved.display().to_string(), t.text),
+                    theme::fg(&format!("({kind})"), t.subtext),
                 );
             }
         }
 
         if other_count > 0 {
             eprintln!(
-                "    {}",
-                format!("+ {} system/group paths (use -v to show)", other_count)
-                    .truecolor(100, 100, 100)
+                "       {}",
+                theme::fg(
+                    &format!("+ {other_count} system/group paths (-v to show)"),
+                    t.subtext
+                )
             );
         }
     }
 
     // Network status
-    eprintln!("  {}", "Network:".white());
     match caps.network_mode() {
         NetworkMode::Blocked => {
-            eprintln!("    outbound: {}", "blocked".red());
+            eprintln!(
+                "  {} {}",
+                theme::badge(" net ", t.red, BADGE_FG_DARK),
+                theme::fg("outbound blocked", t.subtext),
+            );
         }
         NetworkMode::ProxyOnly { port, bind_ports } => {
             if bind_ports.is_empty() {
-                eprintln!("    outbound: {} (localhost:{})", "proxy".yellow(), port);
+                eprintln!(
+                    "  {} {}",
+                    theme::badge(" net ", t.yellow, BADGE_FG_DARK),
+                    theme::fg(&format!("proxy localhost:{port}"), t.subtext),
+                );
             } else {
                 let ports_str: Vec<String> = bind_ports.iter().map(|p| p.to_string()).collect();
                 eprintln!(
-                    "    outbound: {} (localhost:{}), bind: {}",
-                    "proxy".yellow(),
-                    port,
-                    ports_str.join(", ")
+                    "  {} {}",
+                    theme::badge(" net ", t.yellow, BADGE_FG_DARK),
+                    theme::fg(
+                        &format!("proxy localhost:{port}, bind: {}", ports_str.join(", ")),
+                        t.subtext,
+                    ),
                 );
             }
         }
         NetworkMode::AllowAll => {
-            eprintln!("    outbound: {}", "allowed".green());
+            eprintln!(
+                "  {} {}",
+                theme::badge(" net ", t.green, BADGE_FG_DARK),
+                theme::fg("outbound allowed", t.subtext),
+            );
         }
     }
     if !caps.localhost_ports().is_empty() {
@@ -153,11 +151,40 @@ pub fn print_capabilities(caps: &CapabilitySet, verbose: u8, silent: bool) {
             .iter()
             .map(|p| p.to_string())
             .collect();
-        eprintln!("    localhost IPC: {}", ports_str.join(", ").cyan());
+        eprintln!(
+            "  {} {}",
+            theme::badge(" ipc ", t.teal, BADGE_FG_DARK),
+            theme::fg(&format!("localhost:{}", ports_str.join(", ")), t.subtext,),
+        );
     }
 
+    rule();
     eprintln!();
 }
+
+/// Format an access mode as a fixed-width colored badge
+fn format_access_badge(access: &AccessMode) -> String {
+    let t = theme::current();
+    match access {
+        AccessMode::Read => theme::badge("  r  ", t.green, BADGE_FG_DARK),
+        AccessMode::Write => theme::badge("  w  ", t.yellow, BADGE_FG_DARK),
+        AccessMode::ReadWrite => theme::badge(" r+w ", t.brand, BADGE_FG_DARK),
+    }
+}
+
+/// Format an access mode as inline colored text (for prompts)
+fn format_access_inline(access: &AccessMode) -> colored::ColoredString {
+    let t = theme::current();
+    match access {
+        AccessMode::Read => theme::fg("read", t.green),
+        AccessMode::Write => theme::fg("write", t.yellow),
+        AccessMode::ReadWrite => theme::fg("read+write", t.brand),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kernel / ABI
+// ---------------------------------------------------------------------------
 
 /// Print Landlock ABI information (Linux only).
 ///
@@ -168,18 +195,23 @@ pub fn print_abi_info(silent: bool) {
     if silent {
         return;
     }
+    let t = theme::current();
     match nono::Sandbox::detect_abi() {
         Ok(detected) => {
             let features = detected.feature_names();
             let feature_summary: Vec<&str> = features.iter().skip(1).map(|s| s.as_str()).collect();
             if feature_summary.is_empty() {
-                eprintln!("  {} {}", "Sandbox:".white(), detected.to_string().green(),);
+                eprintln!(
+                    "  {} {}",
+                    badge(" kernel ", t.green, BADGE_FG_DARK),
+                    fg(&detected.to_string(), t.text),
+                );
             } else {
                 eprintln!(
-                    "  {} {} ({})",
-                    "Sandbox:".white(),
-                    detected.to_string().green(),
-                    feature_summary.join(", ").truecolor(150, 150, 150),
+                    "  {} {} {}",
+                    badge(" kernel ", t.green, BADGE_FG_DARK),
+                    fg(&detected.to_string(), t.text),
+                    fg(&format!("({})", feature_summary.join(", ")), t.subtext,),
                 );
             }
 
@@ -200,42 +232,50 @@ pub fn print_abi_info(silent: bool) {
                 .collect();
             if !missing.is_empty() {
                 eprintln!(
-                    "  {}",
-                    format!(
-                        "Degraded: {} (upgrade kernel for full support)",
-                        missing.join(", ")
-                    )
-                    .truecolor(180, 150, 50),
+                    "          {}",
+                    fg(
+                        &format!(
+                            "degraded: {} (upgrade kernel for full support)",
+                            missing.join(", "),
+                        ),
+                        t.yellow,
+                    ),
                 );
             }
         }
         Err(e) => {
             eprintln!(
                 "  {} {}",
-                "Sandbox:".white(),
-                format!("Landlock detection failed: {}", e).red(),
+                badge(" kernel ", t.red, BADGE_FG_DARK),
+                fg(&format!("Landlock detection failed: {e}"), t.red),
             );
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Status messages
+// ---------------------------------------------------------------------------
 
 /// Print supervised mode status
 pub fn print_supervised_info(silent: bool, rollback: bool, proxy_active: bool) {
     if silent {
         return;
     }
-    let detail = match (rollback, proxy_active) {
-        (true, true) => "rollback snapshots + network proxy + supervisor",
-        (true, false) => "rollback snapshots + supervisor",
-        (false, true) => "network proxy + supervisor",
-        (false, false) => "supervisor",
-    };
+    let t = theme::current();
+    let mut features = Vec::new();
+    if rollback {
+        features.push("snapshots");
+    }
+    if proxy_active {
+        features.push("proxy");
+    }
+    features.push("supervisor");
     eprintln!(
-        "{}",
-        format!("Supervised mode: child sandboxed, parent manages {detail}.")
-            .truecolor(150, 150, 150)
+        "  {} {}",
+        fg("mode", t.subtext),
+        fg(&format!("supervised ({})", features.join(", ")), t.subtext),
     );
-    eprintln!();
 }
 
 /// Print status message for applying sandbox
@@ -243,10 +283,10 @@ pub fn print_applying_sandbox(silent: bool) {
     if silent {
         return;
     }
-    eprintln!(
-        "{}",
-        "Applying Kernel sandbox protections.".truecolor(150, 150, 150)
-    );
+    let t = theme::current();
+    eprint!("  {}", fg("Applying sandbox...", t.subtext));
+    // Flush so it appears immediately (no newline yet)
+    std::io::stderr().flush().ok();
 }
 
 /// Print success message when sandbox is active
@@ -254,10 +294,9 @@ pub fn print_sandbox_active(silent: bool) {
     if silent {
         return;
     }
-    eprintln!(
-        "{}",
-        "Sandbox active. Restrictions are now in effect.".green()
-    );
+    let t = theme::current();
+    // Complete the "Applying sandbox..." line
+    eprintln!(" {}", fg("active", t.green).bold());
     eprintln!();
 }
 
@@ -266,6 +305,7 @@ pub fn print_dry_run(program: &OsStr, cmd_args: &[OsString], silent: bool) {
     if silent {
         return;
     }
+    let t = theme::current();
     let mut command = Vec::with_capacity(1 + cmd_args.len());
     command.push(program.to_string_lossy().into_owned());
     command.extend(
@@ -275,40 +315,44 @@ pub fn print_dry_run(program: &OsStr, cmd_args: &[OsString], silent: bool) {
     );
 
     eprintln!(
-        "{}",
-        "Dry run mode - sandbox would be applied with above capabilities".yellow()
+        "  {} {}",
+        fg("dry-run", t.yellow).bold(),
+        fg(
+            "sandbox would be applied with above capabilities",
+            t.subtext,
+        ),
     );
-    eprintln!("Command: {:?}", command);
+    eprintln!(
+        "  {} {}",
+        fg("$", t.subtext),
+        fg(&command.join(" "), t.text)
+    );
 }
+
+// ---------------------------------------------------------------------------
+// Rollback / Snapshots
+// ---------------------------------------------------------------------------
 
 /// Print rollback tracking status during session start
 pub fn print_rollback_tracking(paths: &[std::path::PathBuf], silent: bool) {
     if silent {
         return;
     }
-    eprintln!("{}", "Rollback snapshots enabled.".truecolor(150, 150, 150));
-    if paths.len() <= 3 {
-        for path in paths {
-            eprintln!(
-                "  {} {}",
-                "tracking:".truecolor(100, 100, 100),
-                path.display().to_string().white()
-            );
-        }
-    } else {
-        for path in &paths[..2] {
-            eprintln!(
-                "  {} {}",
-                "tracking:".truecolor(100, 100, 100),
-                path.display().to_string().white()
-            );
-        }
+    let t = theme::current();
+    let display_paths = if paths.len() <= 3 { paths } else { &paths[..2] };
+    for path in display_paths {
         eprintln!(
-            "  {}",
-            format!("+ {} more paths", paths.len() - 2).truecolor(100, 100, 100)
+            "  {} {}",
+            badge(" snap ", t.surface, t.subtext),
+            fg(&path.display().to_string(), t.subtext),
         );
     }
-    eprintln!();
+    if paths.len() > 3 {
+        eprintln!(
+            "         {}",
+            fg(&format!("+ {} more paths", paths.len() - 2), t.subtext),
+        );
+    }
 }
 
 /// Print post-exit summary of changes detected by the rollback system
@@ -316,6 +360,8 @@ pub fn print_rollback_session_summary(changes: &[nono::undo::Change], silent: bo
     if silent || changes.is_empty() {
         return;
     }
+
+    let t = theme::current();
 
     let created = changes
         .iter()
@@ -332,23 +378,27 @@ pub fn print_rollback_session_summary(changes: &[nono::undo::Change], silent: bo
 
     let mut parts = Vec::new();
     if created > 0 {
-        parts.push(format!("{created} created"));
+        parts.push(format!("{}", fg(&format!("{created} created"), t.green)));
     }
     if modified > 0 {
-        parts.push(format!("{modified} modified"));
+        parts.push(format!("{}", fg(&format!("{modified} modified"), t.yellow)));
     }
     if deleted > 0 {
-        parts.push(format!("{deleted} deleted"));
+        parts.push(format!("{}", fg(&format!("{deleted} deleted"), t.red)));
     }
 
     eprintln!();
     eprintln!(
-        "{} {} files changed. ({})",
-        "[nono]".truecolor(204, 102, 0),
+        "  {} {} files changed ({})",
+        fg("nono", t.brand).bold(),
         changes.len(),
-        parts.join(", ")
+        parts.join(", "),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Update notification
+// ---------------------------------------------------------------------------
 
 /// Detect how nono was installed based on the binary's path.
 fn detect_install_command() -> &'static str {
@@ -418,61 +468,62 @@ pub fn print_update_notification(info: &crate::update_check::UpdateInfo, silent:
         return;
     }
 
+    let t = theme::current();
     let version = sanitize_terminal_output(&info.latest_version);
+    let install_cmd = detect_install_command();
     eprintln!(
-        "  {} nono {} is available (current: {})",
-        "Update:".yellow().bold(),
-        version.green(),
-        env!("CARGO_PKG_VERSION"),
+        "  {} {} {} {}",
+        fg("update", t.yellow).bold(),
+        fg(&version, t.green).bold(),
+        fg("available", t.subtext),
+        fg(
+            &format!("(current: {})", env!("CARGO_PKG_VERSION")),
+            t.subtext,
+        ),
     );
     if let Some(ref msg) = info.message {
         let safe_msg = sanitize_terminal_output(msg);
-        eprintln!("  {}", safe_msg.truecolor(150, 150, 150));
+        eprintln!("  {}", fg(&safe_msg, t.subtext));
     }
-    let install_cmd = detect_install_command();
-    eprintln!(
-        "  {}",
-        format!("Run: {install_cmd}").truecolor(150, 150, 150)
-    );
+    eprintln!("  {} {}", fg("$", t.subtext), fg(install_cmd, t.text));
     if let Some(ref url) = info.release_url {
         let safe_url = sanitize_terminal_output(url);
-        eprintln!("  {}", safe_url.truecolor(100, 100, 100));
+        eprintln!("  {}", fg(&safe_url, t.blue));
     }
     eprintln!();
 }
+
+// ---------------------------------------------------------------------------
+// Interactive prompts
+// ---------------------------------------------------------------------------
 
 /// Prompt the user to confirm sharing the current working directory.
 ///
 /// Returns `Ok(true)` if user confirms, `Ok(false)` if user declines.
 /// Returns `Ok(false)` with a hint if stdin is not a TTY.
 pub fn prompt_cwd_sharing(cwd: &Path, access: &AccessMode) -> Result<bool> {
+    let t = theme::current();
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         eprintln!(
-            "{}",
-            "Skipping CWD prompt (non-interactive). Use --allow-cwd to include working directory."
-                .truecolor(150, 150, 150),
+            "  {}",
+            fg(
+                "Skipping CWD prompt (non-interactive). Use --allow-cwd to include working directory.",
+                t.subtext,
+            ),
         );
         return Ok(false);
     }
 
-    let access_str = access.to_string();
-    let access_colored = match access {
-        AccessMode::Read => access_str.green(),
-        AccessMode::Write => access_str.yellow(),
-        AccessMode::ReadWrite => access_str.truecolor(204, 102, 0),
-    };
+    let access_colored = format_access_inline(access);
 
     eprintln!(
-        "Current directory '{}' will be shared with {} access.",
-        cwd.display().to_string().white().bold(),
+        "  Share {} with {} access?",
+        fg(&cwd.display().to_string(), t.text).bold(),
         access_colored,
     );
-    eprintln!(
-        "{}",
-        "tip: use --allow-cwd to skip this prompt".truecolor(150, 150, 150),
-    );
-    eprint!("  {} ", "Proceed? [y/N]:".white());
+    eprintln!("  {}", fg("use --allow-cwd to skip this prompt", t.subtext),);
+    eprint!("  {} ", fg("[y/N]", t.text).bold());
     std::io::stderr().flush().ok();
 
     let mut input = String::new();
