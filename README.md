@@ -34,7 +34,19 @@
 
 AI agents get filesystem access, run shell commands, and are inherently open to prompt injection. The standard response is guardrails and policies. The problem is that policies can be bypassed and guardrails linguistically overcome.
 
-Kernel-enforced sandboxing (Landlock/Seatbelt) blocks unauthorized access at the syscall level. Every filesystem change gets a rollback snapshot with integrity protection. Destructive commands are denied before they run. Secrets are injected without touching disk. When the agent needs access outside its permissions, a kernel-mediated supervisor intercepts the syscall via seccomp BPF, opens the file after user approval, and injects only the file descriptor — the agent never executes its own `open()`. No root or `CAP_SYS_ADMIN` required. Runs on any Linux kernel 5.13+ — bare metal, containers(Docker,Podman,K8s), Firecracker, Kata.
+Wrap your AI agent in a kernel-isolated sandbox in seconds. API key protection, destructive action guardrails, full rollback. Zero latency overhead.
+
+Support for **MacOS**, **Linux** and Windows support on the way
+
+**Homebrew (macOS/Linux)**
+
+```bash
+brew install nono
+```
+
+**Other Options**
+
+See the [Installation Guide](https://docs.nono.sh/cli/getting_started/installation) for prebuilt binaries and package manager instructions.
 
 ## CLI
 
