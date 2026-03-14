@@ -28,6 +28,7 @@ use std::collections::HashSet;
 use std::ffi::{CString, OsStr};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -172,6 +173,8 @@ pub struct ExecConfig<'a> {
     pub env_vars: Vec<(&'a str, &'a str)>,
     /// Path to the capability state file.
     pub cap_file: &'a std::path::Path,
+    /// Directory the child process should start in.
+    pub current_dir: &'a std::path::Path,
     /// Whether to suppress diagnostic output.
     pub no_diagnostics: bool,
     /// Threading context for fork safety validation.
@@ -221,6 +224,7 @@ pub fn execute_direct(config: &ExecConfig<'_>) -> Result<()> {
 
     let mut cmd = Command::new(config.resolved_program);
     cmd.env_clear();
+    cmd.current_dir(config.current_dir);
 
     for (key, value) in std::env::vars() {
         if !should_skip_env_var(&key, &config.env_vars, &["NONO_CAP_FILE"]) {
@@ -288,6 +292,8 @@ pub fn execute_supervised(
     // Convert program path to CString for execve
     let program_c = CString::new(program_path.to_string_lossy().as_bytes())
         .map_err(|_| NonoError::SandboxInit("Program path contains null byte".to_string()))?;
+    let current_dir_c = CString::new(config.current_dir.as_os_str().as_bytes())
+        .map_err(|_| NonoError::SandboxInit("Working directory contains null byte".to_string()))?;
 
     // Build argv: [program, args..., NULL]
     let mut argv_c: Vec<CString> = Vec::with_capacity(1 + cmd_args.len());
@@ -638,6 +644,23 @@ pub fn execute_supervised(
 
             // Close inherited FDs (but keep stdin/stdout/stderr and supervisor socket)
             close_inherited_fds(max_fd, &child_keep_fds);
+
+            // SAFETY: `current_dir_c` was prepared before fork and remains valid
+            // for the lifetime of the child. `chdir` is async-signal-safe.
+            let chdir_result = unsafe { libc::chdir(current_dir_c.as_ptr()) };
+            if chdir_result != 0 {
+                const MSG: &[u8] = b"nono: failed to enter child working directory\n";
+                // SAFETY: `write` and `_exit` are async-signal-safe and we're in
+                // the post-fork child path where higher-level Rust APIs are unsafe.
+                unsafe {
+                    libc::write(
+                        libc::STDERR_FILENO,
+                        MSG.as_ptr().cast::<libc::c_void>(),
+                        MSG.len(),
+                    );
+                    libc::_exit(126);
+                }
+            }
 
             // Execute using pre-prepared CStrings (no allocation)
             unsafe {

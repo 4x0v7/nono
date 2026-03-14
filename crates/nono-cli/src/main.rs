@@ -753,6 +753,11 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
         prepared.secrets,
         ExecutionFlags {
             strategy,
+            workdir: args
+                .workdir
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
             no_diagnostics,
             rollback,
             no_rollback: run_args.no_rollback,
@@ -841,6 +846,12 @@ fn run_shell(args: ShellArgs, silent: bool) -> Result<()> {
         prepared.caps,
         prepared.secrets,
         ExecutionFlags {
+            workdir: args
+                .sandbox
+                .workdir
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
             no_diagnostics: true,
             capability_elevation: prepared.capability_elevation,
             ..ExecutionFlags::defaults(silent)?
@@ -919,6 +930,11 @@ fn run_wrap(wrap_args: WrapArgs, silent: bool) -> Result<()> {
         prepared.secrets,
         ExecutionFlags {
             strategy: exec_strategy::ExecStrategy::Direct,
+            workdir: args
+                .workdir
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
             no_diagnostics,
             ..ExecutionFlags::defaults(silent)?
         },
@@ -928,6 +944,7 @@ fn run_wrap(wrap_args: WrapArgs, silent: bool) -> Result<()> {
 /// Flags controlling sandboxed execution behavior.
 struct ExecutionFlags {
     strategy: exec_strategy::ExecStrategy,
+    workdir: std::path::PathBuf,
     no_diagnostics: bool,
     rollback: bool,
     no_rollback: bool,
@@ -985,6 +1002,8 @@ impl ExecutionFlags {
     fn defaults(silent: bool) -> Result<Self> {
         Ok(Self {
             strategy: exec_strategy::ExecStrategy::Supervised,
+            workdir: std::env::current_dir()
+                .map_err(|e| NonoError::SandboxInit(format!("Failed to get cwd: {e}")))?,
             no_diagnostics: false,
             rollback: false,
             no_rollback: false,
@@ -1169,6 +1188,25 @@ fn cleanup_capability_state_file(cap_file_path: &std::path::Path) {
     }
 }
 
+fn execution_start_dir(
+    workdir: &std::path::Path,
+    caps: &CapabilitySet,
+) -> Result<std::path::PathBuf> {
+    let workdir_canonical =
+        workdir
+            .canonicalize()
+            .map_err(|e| NonoError::PathCanonicalization {
+                path: workdir.to_path_buf(),
+                source: e,
+            })?;
+
+    if caps.path_covered(&workdir_canonical) {
+        Ok(workdir_canonical)
+    } else {
+        Ok(std::path::PathBuf::from("/"))
+    }
+}
+
 fn execute_sandboxed(
     program: OsString,
     cmd_args: Vec<OsString>,
@@ -1323,6 +1361,8 @@ fn execute_sandboxed(
         strategy, threading
     );
 
+    let current_dir = execution_start_dir(&flags.workdir, &caps)?;
+
     // Create execution config
     let config = exec_strategy::ExecConfig {
         command: &command,
@@ -1330,6 +1370,7 @@ fn execute_sandboxed(
         caps: &caps,
         env_vars,
         cap_file: &cap_file_path,
+        current_dir: &current_dir,
         no_diagnostics: flags.no_diagnostics || flags.silent,
         threading,
         protected_paths: &flags.protected_paths,
@@ -2502,6 +2543,29 @@ mod tests {
             exec_strategy::ExecStrategy::Supervised
         );
     }
+
+    #[test]
+    fn test_execution_start_dir_keeps_workdir_when_covered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let mut caps = CapabilitySet::new();
+        caps.add_fs(FsCapability::new_dir(dir.path(), AccessMode::Read).expect("grant"));
+
+        let start_dir = execution_start_dir(dir.path(), &caps).expect("start dir");
+
+        assert_eq!(start_dir, canonical);
+    }
+
+    #[test]
+    fn test_execution_start_dir_falls_back_to_root_when_not_covered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let caps = CapabilitySet::new();
+
+        let start_dir = execution_start_dir(dir.path(), &caps).expect("start dir");
+
+        assert_eq!(start_dir, std::path::PathBuf::from("/"));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn test_maybe_enable_macos_launch_services_adds_rule_when_enabled() {
