@@ -43,6 +43,7 @@ use nono::{AccessMode, CapabilitySet, FsCapability, NonoError, Result, Sandbox};
 use profile::WorkdirAccess;
 use std::ffi::OsString;
 use std::os::unix::io::FromRawFd;
+use std::sync::Mutex;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -150,10 +151,26 @@ fn init_theme(cli: &Cli) {
 }
 
 fn init_tracing(cli: &Cli) {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_filter(cli))
-        .with_target(false)
-        .init();
+    let builder = || {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_filter(cli))
+            .with_target(false)
+    };
+
+    if let Some(path) = &cli.log_file {
+        match std::fs::File::create(path) {
+            Ok(file) => {
+                let writer = Mutex::new(file);
+                builder().with_ansi(false).with_writer(writer).init();
+            }
+            Err(e) => {
+                eprintln!("nono: failed to open log file {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    } else {
+        builder().init();
+    }
 }
 
 fn tracing_filter(cli: &Cli) -> EnvFilter {
