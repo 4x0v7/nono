@@ -142,6 +142,11 @@ pub struct CustomCredentialDef {
     /// `apple-password://`).
     #[serde(default)]
     pub env_var: Option<String>,
+
+    /// Optional L7 endpoint rules for method+path filtering.
+    /// When non-empty, only matching method+path combinations are allowed.
+    #[serde(default)]
+    pub endpoint_rules: Vec<nono_proxy::config::EndpointRule>,
 }
 
 fn default_inject_header() -> String {
@@ -1879,6 +1884,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         }
     }
 
@@ -2037,6 +2043,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         };
         assert!(validate_custom_credential("telegram", &cred).is_ok());
     }
@@ -2053,6 +2060,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         };
         let result = validate_custom_credential("telegram", &cred);
         let err = result.expect_err("missing path_pattern should be rejected");
@@ -2071,6 +2079,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         };
         let result = validate_custom_credential("telegram", &cred);
         let err = result.expect_err("pattern without {} should be rejected");
@@ -2089,6 +2098,7 @@ mod tests {
             path_replacement: Some("/v2/bot{}/".to_string()),
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         };
         assert!(validate_custom_credential("telegram", &cred).is_ok());
     }
@@ -2105,6 +2115,7 @@ mod tests {
             path_replacement: Some("/v2/bot/fixed/".to_string()), // No {} placeholder
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         };
         let result = validate_custom_credential("telegram", &cred);
         let err = result.expect_err("replacement without {} should be rejected");
@@ -2123,6 +2134,7 @@ mod tests {
             path_replacement: None,
             query_param_name: Some("key".to_string()),
             env_var: None,
+            endpoint_rules: vec![],
         };
         assert!(validate_custom_credential("google_maps", &cred).is_ok());
     }
@@ -2139,6 +2151,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None, // Missing required field
             env_var: None,
+            endpoint_rules: vec![],
         };
         let result = validate_custom_credential("google_maps", &cred);
         let err = result.expect_err("missing query_param_name should be rejected");
@@ -2157,6 +2170,7 @@ mod tests {
             path_replacement: None,
             query_param_name: Some("".to_string()), // Empty
             env_var: None,
+            endpoint_rules: vec![],
         };
         let result = validate_custom_credential("google_maps", &cred);
         let err = result.expect_err("empty query_param_name should be rejected");
@@ -2175,6 +2189,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         };
         // BasicAuth mode doesn't require additional fields
         // Credential value is expected to be "username:password" format
@@ -2494,6 +2509,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -2510,6 +2526,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -2644,6 +2661,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -2660,6 +2678,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 

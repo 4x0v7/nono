@@ -87,6 +87,25 @@ pub async fn handle_reverse_proxy(
             prefix: service.clone(),
         })?;
 
+    // L7 endpoint filtering: check method+path against rules before any
+    // credential operations. Denied endpoints get 403 immediately.
+    if !cred.endpoint_rules.is_allowed(&method, &upstream_path) {
+        let reason = format!(
+            "endpoint denied: {} {} on service '{}'",
+            method, upstream_path, service
+        );
+        warn!("{}", reason);
+        audit::log_denied(
+            ctx.audit_log,
+            audit::ProxyMode::Reverse,
+            &service,
+            0,
+            &reason,
+        );
+        send_error(stream, 403, "Forbidden").await?;
+        return Ok(());
+    }
+
     // Validate phantom token based on injection mode.
     // For header/basic_auth modes: validate from Authorization/x-api-key header
     // For url_path mode: validate from URL path pattern

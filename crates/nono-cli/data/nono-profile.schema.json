@@ -399,6 +399,30 @@
             { "type": "null" }
           ],
           "description": "Explicit environment variable name for the phantom token (e.g., \"OPENAI_API_KEY\"). Required when credential_key is a URI manager reference (op:// or apple-password://)."
+        },
+        "endpoint_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EndpointRule"
+          },
+          "description": "L7 endpoint rules for method+path filtering. When non-empty, only requests matching at least one rule are allowed (default-deny). When empty or absent, all endpoints are permitted.",
+          "default": []
+        }
+      }
+    },
+    "EndpointRule": {
+      "type": "object",
+      "description": "HTTP method+path access rule for restricting which API endpoints an agent can access through a credential route.",
+      "additionalProperties": false,
+      "required": ["method", "path"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "description": "HTTP method to match (e.g., \"GET\", \"POST\") or \"*\" for any method."
+        },
+        "path": {
+          "type": "string",
+          "description": "URL path glob pattern. Uses standard glob syntax: \"*\" matches one path segment, \"**\" matches zero or more segments."
         }
       }
     },

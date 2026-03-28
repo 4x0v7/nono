@@ -1578,6 +1578,7 @@ version = "0.25.0"
 dependencies = [
  "base64",
  "getrandom 0.4.1",
+ "globset",
  "http-body-util",
  "hyper",
  "hyper-rustls",

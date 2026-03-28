@@ -5,7 +5,7 @@
 
 use crate::profile::CustomCredentialDef;
 use nono::{NonoError, Result};
-use nono_proxy::config::{InjectMode, ProxyConfig, RouteConfig};
+use nono_proxy::config::{EndpointRule, InjectMode, ProxyConfig, RouteConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::debug;
@@ -77,6 +77,11 @@ pub struct CredentialDef {
     /// from `credential_key.to_uppercase()`.
     #[serde(default)]
     pub env_var: Option<String>,
+
+    /// Optional L7 endpoint rules for method+path filtering.
+    /// When non-empty, only matching method+path combinations are allowed.
+    #[serde(default)]
+    pub endpoint_rules: Vec<EndpointRule>,
 }
 
 fn default_inject_header() -> String {
@@ -228,6 +233,7 @@ pub fn resolve_credentials(
                 path_replacement: cred.path_replacement.clone(),
                 query_param_name: cred.query_param_name.clone(),
                 env_var: cred.env_var.clone(),
+                endpoint_rules: cred.endpoint_rules.clone(),
             });
         } else if let Some(cred) = policy.credentials.get(name) {
             // Validate env_var against dangerous variable blocklist
@@ -253,6 +259,7 @@ pub fn resolve_credentials(
                 path_replacement: None,
                 query_param_name: None,
                 env_var: cred.env_var.clone(),
+                endpoint_rules: cred.endpoint_rules.clone(),
             });
         }
         // We already validated existence above, so this else branch won't be hit
@@ -431,6 +438,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -465,6 +473,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -495,6 +504,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -535,6 +545,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -611,6 +622,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -638,6 +650,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -665,6 +678,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: None,
+                endpoint_rules: vec![],
             },
         );
 
@@ -697,6 +711,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: Some("OPENAI_API_KEY".to_string()),
+                endpoint_rules: vec![],
             },
         );
 
@@ -803,6 +818,7 @@ mod tests {
                 path_replacement: None,
                 query_param_name: None,
                 env_var: Some("LD_PRELOAD".to_string()),
+                endpoint_rules: vec![],
             },
         );
 

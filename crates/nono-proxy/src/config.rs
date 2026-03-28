@@ -3,6 +3,7 @@
 //! Defines the configuration for the proxy server, including allowed hosts,
 //! credential routes, and external proxy settings.
 
+use globset::Glob;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
@@ -124,6 +125,118 @@ pub struct RouteConfig {
     /// otherwise produce a nonsensical env var name.
     #[serde(default)]
     pub env_var: Option<String>,
+
+    /// Optional L7 endpoint rules for method+path filtering.
+    ///
+    /// When non-empty, only requests matching at least one rule are allowed
+    /// (default-deny). When empty, all method+path combinations are permitted
+    /// (backward compatible).
+    #[serde(default)]
+    pub endpoint_rules: Vec<EndpointRule>,
+}
+
+/// An HTTP method+path access rule for reverse proxy endpoint filtering.
+///
+/// Used to restrict which API endpoints an agent can access through a
+/// credential route. Patterns use `/` separated segments with wildcards:
+/// - `*` matches exactly one path segment
+/// - `**` matches zero or more path segments
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointRule {
+    /// HTTP method to match ("GET", "POST", etc.) or "*" for any method.
+    pub method: String,
+    /// URL path pattern with glob segments.
+    /// Example: "/api/v4/projects/*/merge_requests/**"
+    pub path: String,
+}
+
+/// Pre-compiled endpoint rules for the request hot path.
+///
+/// Built once at proxy startup from `EndpointRule` definitions. Holds
+/// compiled `globset::GlobMatcher`s so the hot path does a regex match,
+/// not a glob compile.
+pub struct CompiledEndpointRules {
+    rules: Vec<CompiledRule>,
+}
+
+struct CompiledRule {
+    method: String,
+    matcher: globset::GlobMatcher,
+}
+
+impl CompiledEndpointRules {
+    /// Compile endpoint rules into matchers. Invalid glob patterns are
+    /// rejected at startup with an error, not silently ignored at runtime.
+    pub fn compile(rules: &[EndpointRule]) -> Result<Self, String> {
+        let mut compiled = Vec::with_capacity(rules.len());
+        for rule in rules {
+            let glob = Glob::new(&rule.path)
+                .map_err(|e| format!("invalid endpoint path pattern '{}': {}", rule.path, e))?;
+            compiled.push(CompiledRule {
+                method: rule.method.clone(),
+                matcher: glob.compile_matcher(),
+            });
+        }
+        Ok(Self { rules: compiled })
+    }
+
+    /// Check if the given method+path is allowed.
+    /// Returns `true` if no rules were compiled (allow-all, backward compatible).
+    #[must_use]
+    pub fn is_allowed(&self, method: &str, path: &str) -> bool {
+        if self.rules.is_empty() {
+            return true;
+        }
+        let normalized = normalize_path(path);
+        self.rules.iter().any(|r| {
+            (r.method == "*" || r.method.eq_ignore_ascii_case(method))
+                && r.matcher.is_match(&normalized)
+        })
+    }
+}
+
+impl std::fmt::Debug for CompiledEndpointRules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledEndpointRules")
+            .field("count", &self.rules.len())
+            .finish()
+    }
+}
+
+/// Check if any endpoint rule permits the given method+path.
+/// Returns `true` if rules is empty (allow-all, backward compatible).
+///
+/// Test convenience only — compiles globs on each call. Production code
+/// should use `CompiledEndpointRules::is_allowed()` instead.
+#[cfg(test)]
+fn endpoint_allowed(rules: &[EndpointRule], method: &str, path: &str) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+    let normalized = normalize_path(path);
+    rules.iter().any(|r| {
+        (r.method == "*" || r.method.eq_ignore_ascii_case(method))
+            && Glob::new(&r.path)
+                .ok()
+                .map(|g| g.compile_matcher())
+                .is_some_and(|m| m.is_match(&normalized))
+    })
+}
+
+/// Normalize a URL path for matching: strip query string, collapse double
+/// slashes, strip trailing slash (but preserve root "/").
+fn normalize_path(path: &str) -> String {
+    // Strip query string
+    let path = path.split('?').next().unwrap_or(path);
+
+    // Collapse double slashes by splitting on '/' and filtering empties,
+    // then rejoin. This also strips trailing slash.
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    }
 }
 
 fn default_inject_header() -> String {
@@ -215,5 +328,217 @@ mod tests {
         let json = r#"{"address": "proxy:3128", "auth": null}"#;
         let ext: ExternalProxyConfig = serde_json::from_str(json).unwrap();
         assert!(ext.bypass_hosts.is_empty());
+    }
+
+    // ========================================================================
+    // EndpointRule + path matching tests
+    // ========================================================================
+
+    #[test]
+    fn test_endpoint_allowed_empty_rules_allows_all() {
+        assert!(endpoint_allowed(&[], "GET", "/anything"));
+        assert!(endpoint_allowed(&[], "DELETE", "/admin/nuke"));
+    }
+
+    /// Helper: check a single rule against method+path via endpoint_allowed.
+    fn check(rule: &EndpointRule, method: &str, path: &str) -> bool {
+        endpoint_allowed(std::slice::from_ref(rule), method, path)
+    }
+
+    #[test]
+    fn test_endpoint_rule_exact_path() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/v1/chat/completions".to_string(),
+        };
+        assert!(check(&rule, "GET", "/v1/chat/completions"));
+        assert!(!check(&rule, "GET", "/v1/chat"));
+        assert!(!check(&rule, "GET", "/v1/chat/completions/extra"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_method_case_insensitive() {
+        let rule = EndpointRule {
+            method: "get".to_string(),
+            path: "/api".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api"));
+        assert!(check(&rule, "Get", "/api"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_method_wildcard() {
+        let rule = EndpointRule {
+            method: "*".to_string(),
+            path: "/api/resource".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/resource"));
+        assert!(check(&rule, "DELETE", "/api/resource"));
+        assert!(check(&rule, "POST", "/api/resource"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_method_mismatch() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/resource".to_string(),
+        };
+        assert!(!check(&rule, "POST", "/api/resource"));
+        assert!(!check(&rule, "DELETE", "/api/resource"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_single_wildcard() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/v4/projects/*/merge_requests".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/v4/projects/123/merge_requests"));
+        assert!(check(
+            &rule,
+            "GET",
+            "/api/v4/projects/my-proj/merge_requests"
+        ));
+        assert!(!check(&rule, "GET", "/api/v4/projects/merge_requests"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_double_wildcard() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/v4/projects/**".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/v4/projects/123"));
+        assert!(check(&rule, "GET", "/api/v4/projects/123/merge_requests"));
+        assert!(check(&rule, "GET", "/api/v4/projects/a/b/c/d"));
+        assert!(!check(&rule, "GET", "/api/v4/other"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_double_wildcard_middle() {
+        let rule = EndpointRule {
+            method: "*".to_string(),
+            path: "/api/**/notes".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/notes"));
+        assert!(check(&rule, "POST", "/api/projects/123/notes"));
+        assert!(check(&rule, "GET", "/api/a/b/c/notes"));
+        assert!(!check(&rule, "GET", "/api/a/b/c/comments"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_strips_query_string() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/data".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/data?page=1&limit=10"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_trailing_slash_normalized() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/data".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api/data/"));
+        assert!(check(&rule, "GET", "/api/data"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_double_slash_normalized() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/data".to_string(),
+        };
+        assert!(check(&rule, "GET", "/api//data"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_root_path() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+        };
+        assert!(check(&rule, "GET", "/"));
+        assert!(!check(&rule, "GET", "/anything"));
+    }
+
+    #[test]
+    fn test_compiled_endpoint_rules_hot_path() {
+        let rules = vec![
+            EndpointRule {
+                method: "GET".to_string(),
+                path: "/repos/*/issues".to_string(),
+            },
+            EndpointRule {
+                method: "POST".to_string(),
+                path: "/repos/*/issues/*/comments".to_string(),
+            },
+        ];
+        let compiled = CompiledEndpointRules::compile(&rules).unwrap();
+        assert!(compiled.is_allowed("GET", "/repos/myrepo/issues"));
+        assert!(compiled.is_allowed("POST", "/repos/myrepo/issues/42/comments"));
+        assert!(!compiled.is_allowed("DELETE", "/repos/myrepo"));
+        assert!(!compiled.is_allowed("GET", "/repos/myrepo/pulls"));
+    }
+
+    #[test]
+    fn test_compiled_endpoint_rules_empty_allows_all() {
+        let compiled = CompiledEndpointRules::compile(&[]).unwrap();
+        assert!(compiled.is_allowed("DELETE", "/admin/nuke"));
+    }
+
+    #[test]
+    fn test_compiled_endpoint_rules_invalid_pattern_rejected() {
+        let rules = vec![EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/[invalid".to_string(),
+        }];
+        assert!(CompiledEndpointRules::compile(&rules).is_err());
+    }
+
+    #[test]
+    fn test_endpoint_allowed_multiple_rules() {
+        let rules = vec![
+            EndpointRule {
+                method: "GET".to_string(),
+                path: "/repos/*/issues".to_string(),
+            },
+            EndpointRule {
+                method: "POST".to_string(),
+                path: "/repos/*/issues/*/comments".to_string(),
+            },
+        ];
+        assert!(endpoint_allowed(&rules, "GET", "/repos/myrepo/issues"));
+        assert!(endpoint_allowed(
+            &rules,
+            "POST",
+            "/repos/myrepo/issues/42/comments"
+        ));
+        assert!(!endpoint_allowed(&rules, "DELETE", "/repos/myrepo"));
+        assert!(!endpoint_allowed(&rules, "GET", "/repos/myrepo/pulls"));
+    }
+
+    #[test]
+    fn test_endpoint_rule_serde_default() {
+        let json = r#"{
+            "prefix": "/test",
+            "upstream": "https://example.com"
+        }"#;
+        let route: RouteConfig = serde_json::from_str(json).unwrap();
+        assert!(route.endpoint_rules.is_empty());
+    }
+
+    #[test]
+    fn test_endpoint_rule_serde_roundtrip() {
+        let rule = EndpointRule {
+            method: "GET".to_string(),
+            path: "/api/*/data".to_string(),
+        };
+        let json = serde_json::to_string(&rule).unwrap();
+        let deserialized: EndpointRule = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.method, "GET");
+        assert_eq!(deserialized.path, "/api/*/data");
     }
 }

@@ -328,6 +328,31 @@ Custom credentials can be defined in profiles for APIs not covered by the built-
 
 See [Credential Injection](/cli/features/credential-injection) for complete documentation including custom credential definitions.
 
+#### `--allow-endpoint`
+
+Restrict a credential service to specific HTTP method+path patterns. When set, only requests matching at least one rule are proxied; all others receive 403 Forbidden. Can be specified multiple times.
+
+Format: `SERVICE:METHOD:PATH`
+
+- **SERVICE**: credential service name (e.g., `openai`, `github`)
+- **METHOD**: HTTP method (`GET`, `POST`, etc.) or `*` for any method
+- **PATH**: URL path glob pattern (`*` matches one segment, `**` matches zero or more)
+
+```bash
+# Allow only chat completions through OpenAI
+nono run --allow-cwd --credential openai \
+  --allow-endpoint 'openai:POST:/v1/chat/completions' \
+  -- my-agent
+
+# Allow GitHub issue reads and comment writes, block everything else
+nono run --allow-cwd --credential github \
+  --allow-endpoint 'github:GET:/repos/*/issues/**' \
+  --allow-endpoint 'github:POST:/repos/*/issues/*/comments' \
+  -- my-agent
+```
+
+Endpoint rules can also be defined in profiles via `endpoint_rules` on custom credentials. See [Credential Injection](/cli/features/credential-injection#endpoint-filtering) for details.
+
 #### `--upstream-proxy`
 
 Chain outbound connections through an upstream (enterprise) proxy. Cloud metadata endpoints are still denied.

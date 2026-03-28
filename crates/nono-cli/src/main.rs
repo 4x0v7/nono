@@ -898,6 +898,7 @@ fn run_sandbox(run_args: RunArgs, silent: bool) -> Result<()> {
             upstream_proxy: effective_upstream_proxy,
             upstream_bypass: effective_bypass,
             allow_bind_ports: effective_listen_ports,
+            allow_endpoint: args.allow_endpoint.clone(),
             proxy_port: args.proxy_port,
             open_url_origins: prepared.open_url_origins,
             open_url_allow_localhost: prepared.open_url_allow_localhost,
@@ -1097,6 +1098,8 @@ struct ExecutionFlags {
     upstream_bypass: Vec<String>,
     /// Ports the sandboxed process is allowed to bind (from --allow-bind)
     allow_bind_ports: Vec<u16>,
+    /// Endpoint rules from --allow-endpoint (parsed into per-service rules)
+    allow_endpoint: Vec<String>,
     /// Fixed port for the credential proxy (from --proxy-port)
     proxy_port: Option<u16>,
     /// Allowed URL origins for supervisor-delegated browser opens
@@ -1144,6 +1147,7 @@ impl ExecutionFlags {
             upstream_proxy: None,
             upstream_bypass: Vec::new(),
             allow_bind_ports: Vec::new(),
+            allow_endpoint: Vec::new(),
             proxy_port: None,
             open_url_origins: Vec::new(),
             open_url_allow_localhost: false,
@@ -1291,6 +1295,25 @@ fn build_proxy_config_from_flags(
     let expanded_allow_domain =
         network_policy::expand_proxy_allow(&net_policy, &flags.allow_domain);
 
+    // Apply --allow-endpoint rules to matching routes
+    for entry in &flags.allow_endpoint {
+        let (service, rule) = parse_allow_endpoint(entry)?;
+        let mut found = false;
+        for route in &mut resolved.routes {
+            if route.prefix == service {
+                route.endpoint_rules.push(rule.clone());
+                found = true;
+            }
+        }
+        if !found {
+            return Err(NonoError::ConfigParse(format!(
+                "--allow-endpoint references unknown service '{}'. \
+                 Add it with --credential {} first.",
+                service, service
+            )));
+        }
+    }
+
     // Build the proxy config with expanded extra hosts
     let mut proxy_config = network_policy::build_proxy_config(&resolved, &expanded_allow_domain);
 
@@ -1309,6 +1332,44 @@ fn build_proxy_config_from_flags(
     }
 
     Ok(proxy_config)
+}
+
+/// Parse an `--allow-endpoint` value in "SERVICE:METHOD:/path/pattern" format.
+fn parse_allow_endpoint(entry: &str) -> Result<(String, nono_proxy::config::EndpointRule)> {
+    // Split on first two colons: "github:GET:/repos/*/issues"
+    // -> ("github", "GET", "/repos/*/issues")
+    let first_colon = entry.find(':').ok_or_else(|| {
+        NonoError::ConfigParse(format!(
+            "invalid --allow-endpoint format '{}': expected SERVICE:METHOD:/path",
+            entry
+        ))
+    })?;
+    let service = &entry[..first_colon];
+    let rest = &entry[first_colon + 1..];
+
+    let second_colon = rest.find(':').ok_or_else(|| {
+        NonoError::ConfigParse(format!(
+            "invalid --allow-endpoint format '{}': expected SERVICE:METHOD:/path",
+            entry
+        ))
+    })?;
+    let method = &rest[..second_colon];
+    let path = &rest[second_colon + 1..];
+
+    if service.is_empty() || method.is_empty() || path.is_empty() {
+        return Err(NonoError::ConfigParse(format!(
+            "invalid --allow-endpoint format '{}': service, method, and path must be non-empty",
+            entry
+        )));
+    }
+
+    Ok((
+        service.to_string(),
+        nono_proxy::config::EndpointRule {
+            method: method.to_string(),
+            path: path.to_string(),
+        },
+    ))
 }
 
 fn cleanup_capability_state_file(cap_file_path: &std::path::Path) {

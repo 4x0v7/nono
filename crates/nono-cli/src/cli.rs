@@ -604,6 +604,17 @@ pub struct SandboxArgs {
     )]
     pub proxy_credential: Vec<String>,
 
+    /// Restrict a credential service to specific HTTP method+path patterns (repeatable).
+    /// Format: "SERVICE:METHOD:/path/pattern" (e.g., "github:GET:/repos/*/issues")
+    /// Use "*" for any method: "github:*:/repos/*/issues"
+    /// Patterns: "*" matches one path segment, "**" matches zero or more.
+    #[arg(
+        long = "allow-endpoint",
+        value_name = "SERVICE:METHOD:PATH",
+        help_heading = "CREDENTIALS"
+    )]
+    pub allow_endpoint: Vec<String>,
+
     /// Load credentials as env vars. For network API keys, prefer --credential
     #[arg(
         long,
@@ -825,6 +836,7 @@ impl From<WrapSandboxArgs> for SandboxArgs {
             external_proxy_bypass: Vec::new(),
             proxy_port: None,
             proxy_credential: Vec::new(),
+            allow_endpoint: Vec::new(),
             env_credential: args.env_credential,
             env_credential_map: args.env_credential_map,
             allow_command: args.allow_command,
@@ -2164,6 +2176,34 @@ mod tests {
                 assert!(args.block_net);
             }
             _ => panic!("Expected Why command"),
+        }
+    }
+
+    #[test]
+    fn test_allow_endpoint_flag_parses() {
+        let cli = Cli::parse_from([
+            "nono",
+            "run",
+            "--allow",
+            ".",
+            "--credential",
+            "github",
+            "--allow-endpoint",
+            "github:GET:/repos/*/issues",
+            "--allow-endpoint",
+            "github:POST:/repos/*/issues/*/comments",
+            "echo",
+        ]);
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.sandbox.allow_endpoint.len(), 2);
+                assert_eq!(args.sandbox.allow_endpoint[0], "github:GET:/repos/*/issues");
+                assert_eq!(
+                    args.sandbox.allow_endpoint[1],
+                    "github:POST:/repos/*/issues/*/comments"
+                );
+            }
+            _ => panic!("Expected Run command"),
         }
     }
 

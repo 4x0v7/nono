@@ -5,7 +5,7 @@
 //! requests via headers, URL paths, query parameters, or Basic Auth.
 //! The sandboxed agent never sees the real credentials.
 
-use crate::config::{InjectMode, RouteConfig};
+use crate::config::{CompiledEndpointRules, InjectMode, RouteConfig};
 use crate::error::{ProxyError, Result};
 use base64::Engine;
 use std::collections::HashMap;
@@ -36,6 +36,11 @@ pub struct LoadedCredential {
     // --- Query param mode ---
     /// Query parameter name
     pub query_param_name: Option<String>,
+
+    // --- L7 endpoint filtering ---
+    /// Pre-compiled endpoint rules for method+path filtering.
+    /// Compiled once at load time to avoid per-request glob compilation.
+    pub endpoint_rules: CompiledEndpointRules,
 }
 
 /// Custom Debug impl that redacts secret values to prevent accidental leakage
@@ -51,6 +56,7 @@ impl std::fmt::Debug for LoadedCredential {
             .field("path_pattern", &self.path_pattern)
             .field("path_replacement", &self.path_replacement)
             .field("query_param_name", &self.query_param_name)
+            .field("endpoint_rules", &self.endpoint_rules)
             .finish()
     }
 }
@@ -120,6 +126,10 @@ impl CredentialStore {
                         path_pattern: route.path_pattern.clone(),
                         path_replacement: route.path_replacement.clone(),
                         query_param_name: route.query_param_name.clone(),
+                        endpoint_rules: CompiledEndpointRules::compile(&route.endpoint_rules)
+                            .map_err(|e| {
+                                ProxyError::Credential(format!("route '{}': {}", route.prefix, e))
+                            })?,
                     },
                 );
             }
@@ -166,6 +176,7 @@ impl CredentialStore {
 const KEYRING_SERVICE: &str = nono::keystore::DEFAULT_SERVICE;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -191,6 +202,7 @@ mod tests {
             path_pattern: None,
             path_replacement: None,
             query_param_name: None,
+            endpoint_rules: CompiledEndpointRules::compile(&[]).unwrap(),
         };
 
         let debug_output = format!("{:?}", cred);
@@ -228,6 +240,7 @@ mod tests {
             path_replacement: None,
             query_param_name: None,
             env_var: None,
+            endpoint_rules: vec![],
         }];
         let store = CredentialStore::load(&routes);
         assert!(store.is_ok());
