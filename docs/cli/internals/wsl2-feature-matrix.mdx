@@ -1,0 +1,228 @@
+---
+title: WSL2 Feature Matrix
+description: Complete feature-by-feature compatibility status for nono on WSL2
+---
+
+Complete feature compatibility for nono running on WSL2 (kernel 6.6, Landlock V3).
+
+Legend: **Full** = identical to native Linux | **Degraded** = works with limitations | **Unavailable** = not functional
+
+## Subcommands
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `nono run` (supervised mode) | Full | Fork + Landlock + exec works |
+| `nono shell` (interactive shell) | Full | Same as `run` with $SHELL |
+| `nono wrap` (direct mode) | Full | No fork, no supervisor |
+| `nono learn` | Full | strace-based tracing works |
+| `nono why` | Full | Policy queries are pure logic |
+| `nono setup` | Full | Reports WSL2 feature matrix |
+| `nono rollback` (list/show/restore/verify/cleanup) | Full | Pure userspace |
+| `nono audit` (list/show) | Full | Pure userspace |
+| `nono trust` (init/sign/verify/list) | Degraded | Keyless signing works; keygen/sign-policy need D-Bus `org.freedesktop.secrets` |
+| `nono policy` (groups/profiles/show/diff/validate) | Full | Pure logic |
+| `nono profile` (init/schema/guide) | Full | Pure logic |
+
+## Filesystem Permissions
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `--allow` (read+write directory) | Full | Landlock V1+ |
+| `--read` (read-only directory) | Full | Landlock V1+ |
+| `--write` (write-only directory) | Full | Landlock V1+ |
+| `--allow-file` (read+write single file) | Full | Landlock V1+ |
+| `--read-file` (read-only single file) | Full | Landlock V1+ |
+| `--write-file` (write-only single file) | Full | Landlock V1+ |
+| `--allow-cwd` | Full | |
+| `--workdir` | Full | Variable expansion only |
+| `--override-deny` | Full | |
+| `--skip-dir` | Full | |
+| File rename across directories | Full | Landlock V2 (Refer) |
+| File truncation control | Full | Landlock V3 (Truncate) |
+| Device ioctl filtering | Unavailable | Needs Landlock V5 (kernel 6.10+) |
+| Path canonicalization / symlink resolution | Full | |
+| Sensitive path blocking (46 paths) | Full | Policy-driven |
+
+## Network
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `--block-net` (block all outbound) | Full | seccomp `RET_ERRNO`, kernel-enforced |
+| Default (allow all network) | Full | No restriction applied |
+| `--listen-port` (child binds TCP port) | Unavailable | Needs Landlock V4 |
+| `--open-port` (bidirectional localhost TCP) | Unavailable | Needs Landlock V4 |
+| Per-port TCP filtering | Unavailable | Needs Landlock V4 (kernel 6.7+) |
+
+## Credential Proxy
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `--credential SERVICE` (reverse proxy injection) | Degraded | Proxy works; child not port-locked to proxy |
+| `--env-credential` (env var injection) | Full | No proxy needed |
+| `--env-credential-map` | Full | No proxy needed |
+| `--network-profile` (host allowlist via proxy) | Degraded | Proxy works; no port lockdown |
+| `--allow-domain` (domain allowlist) | Degraded | Proxy works; no port lockdown |
+| `--allow-endpoint` (L7 method+path filtering) | Degraded | Filtering works at proxy; child can bypass proxy |
+| `--upstream-proxy` (chain through external proxy) | Degraded | Proxy works; no port lockdown |
+| `--upstream-bypass` | Degraded | Same as above |
+| `--proxy-port` (fixed proxy port) | Degraded | Proxy binds correctly; no enforcement |
+| Phantom token authentication | Full | Session token in env vars |
+| Credential zeroization in memory | Full | Rust `Zeroizing<String>` |
+| SSRF protection (cloud metadata blocking) | Full | Applied at proxy level |
+
+**Why degraded:** On native Linux with Landlock V4, the child can *only* connect to `127.0.0.1:{proxy_port}`. On WSL2 with V3, there's no port-level filtering — the child could bypass the proxy and connect directly. The proxy itself works correctly. When Landlock V4 arrives, enforcement activates automatically.
+
+## Execution & Supervision
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Supervised mode (fork + sandbox child) | Full | Basic supervision works |
+| Direct mode (sandbox + exec) | Full | |
+| Signal forwarding (SIGTERM, etc.) | Full | Parent forwards to child |
+| Exit code preservation | Full | |
+| Diagnostic footer on failure | Full | |
+| `--capability-elevation` (interactive prompts) | Unavailable | seccomp notify returns EBUSY |
+| PTY relay for approval UI | Unavailable | Depends on capability elevation |
+| Runtime capability expansion | Unavailable | Depends on seccomp notify |
+| `--dry-run` | Full | No execution, pure logic |
+| `--no-diagnostics` | Full | |
+| Threading context management | Full | |
+| `PR_SET_DUMPABLE(0)` on parent | Full | |
+
+## Rollback & Snapshots
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `--rollback` (enable snapshots) | Full | Pure userspace (content-addressable store) |
+| `--no-rollback` | Full | |
+| `--no-rollback-prompt` | Full | |
+| `--rollback-exclude` | Full | |
+| `--rollback-include` | Full | |
+| `--rollback-all` | Full | |
+| `--rollback-dest` | Full | |
+| Merkle tree integrity verification | Full | SHA-256 |
+| Incremental snapshots | Full | |
+| Interactive restore prompts | Full | |
+| Gitignore-aware exclusion | Full | |
+
+## Audit Trail
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Session recording | Full | JSON per session |
+| `--no-audit` | Full | |
+| Audit list/show/filter | Full | |
+| Date/path/command filtering | Full | |
+| JSON output | Full | |
+
+## Command Blocking
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Default dangerous command blocklist (46 commands) | Full | Policy-driven |
+| `--allow-command` | Full | |
+| `--block-command` | Full | |
+
+## Trust & Signing
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `trust init` | Full | Creates trust-policy.json |
+| `trust sign` (with key) | Degraded | Needs D-Bus `org.freedesktop.secrets` for keystore |
+| `trust sign --keyless` (Sigstore) | Full | Fulcio + Rekor, no local keystore |
+| `trust sign-policy` | Degraded | Needs D-Bus keystore |
+| `trust verify` | Full | Bundle verification is pure crypto |
+| `trust list` | Full | |
+| `trust keygen` | Degraded | Needs D-Bus `org.freedesktop.secrets` |
+| `trust export-key` | Degraded | Needs D-Bus keystore |
+| Write-protection for signed files | Full | Landlock deny rules |
+| Trust interception in supervised mode | Full | Uses Unix socket IPC, not seccomp |
+
+**D-Bus keystore fix:** Install `gnome-keyring` or `keepassxc` and ensure the `org.freedesktop.secrets` service is running.
+
+## Profile System
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Built-in profiles (claude-code, codex, etc.) | Full | |
+| Custom user profiles | Full | |
+| Profile inheritance (`extends`) | Full | |
+| Variable expansion ($WORKDIR, $HOME, $TMPDIR) | Full | |
+| Policy group resolution | Full | |
+| `signal_mode` | Unavailable | Needs Landlock V6 (Scoping) |
+| `process_info_mode` | Unavailable | Needs Landlock V6 (Scoping) |
+| `ipc_mode` | Unavailable | Needs Landlock V6 (Scoping) |
+| `capability_elevation` (in profile) | Unavailable | seccomp notify EBUSY |
+| `interactive` mode | Unavailable | Depends on capability elevation |
+| Workdir access levels (none/read/readwrite) | Full | |
+
+## Hooks
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Hook installation (Claude Code) | Full | Shell script installation |
+| Hook script embedding | Full | |
+| Settings.json registration | Full | |
+
+## Learn Mode
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `nono learn -- COMMAND` | Full | strace available on WSL2 |
+| `--profile` (compare against profile) | Full | |
+| `--json` (profile fragment output) | Full | |
+| `--timeout` | Full | |
+| Network connection tracing | Full | strace captures connect/bind |
+| Listening port detection | Full | |
+
+## Output & UX
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| `--silent` | Full | |
+| `--theme` | Full | |
+| `--log-file` | Full | |
+| `--verbose` | Full | |
+| `--json` (on applicable commands) | Full | |
+| Colored output | Full | |
+| Update notifications | Full | |
+
+## Environment & Configuration
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Environment sanitization | Full | |
+| `NONO_*` env var support | Full | |
+| User config (~/.config/nono/) | Full | |
+| Embedded policy (policy.json) | Full | |
+
+## Summary
+
+| Category | Full | Degraded | Unavailable |
+|----------|------|----------|-------------|
+| Subcommands (11) | 10 | 1 | 0 |
+| Filesystem (15) | 14 | 0 | 1 |
+| Network (5) | 2 | 0 | 3 |
+| Credential Proxy (10) | 4 | 6 | 0 |
+| Execution (12) | 9 | 0 | 3 |
+| Rollback (10) | 10 | 0 | 0 |
+| Audit (5) | 5 | 0 | 0 |
+| Command Blocking (3) | 3 | 0 | 0 |
+| Trust (10) | 5 | 4 | 1 |
+| Profiles (11) | 6 | 0 | 5 |
+| Hooks (3) | 3 | 0 | 0 |
+| Learn Mode (5) | 5 | 0 | 0 |
+| Output (6) | 6 | 0 | 0 |
+| Environment (4) | 4 | 0 | 0 |
+| **Total (110)** | **86 (78%)** | **11 (10%)** | **13 (12%)** |
+
+### Root causes of all limitations
+
+| Root Cause | Features Affected | Fix |
+|------------|-------------------|-----|
+| Landlock V4 missing (kernel 6.6 < 6.7) | Per-port network (3) | WSL2 kernel upgrade (automatic) |
+| Landlock V6 missing (kernel 6.6 < 6.12) | signal_mode, process_info_mode, ipc_mode (3) | WSL2 kernel upgrade (automatic) |
+| Landlock V5 missing (kernel 6.6 < 6.10) | Device ioctl filtering (1) | WSL2 kernel upgrade (automatic) |
+| seccomp notify EBUSY | capability_elevation, interactive mode, PTY relay, runtime expansion (4) | microsoft/WSL#9548 fix or eBPF alternative |
+| D-Bus `org.freedesktop.secrets` missing | trust keygen/sign/sign-policy/export-key (4) | Install gnome-keyring or keepassxc |
+| Proxy port enforcement (Landlock V4) | All credential proxy features (6 degraded) | WSL2 kernel upgrade (automatic) |

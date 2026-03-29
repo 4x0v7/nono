@@ -200,11 +200,24 @@ When WSL2 is detected, `nono setup --check-only` now prints a full feature avail
 
 ---
 
-## Track 1.5 — Documentation 🔲
+## Track 1.5 — Documentation ✅
 
 **Goal**: Compatibility matrix, seccomp limitation docs, workarounds.
 
-**Status**: Not started.
+### What was done
+
+Added `docs/cli/internals/wsl2.mdx` — comprehensive WSL2 documentation covering:
+
+- Quick summary of what works and what's limited
+- Full compatibility matrix (14 features)
+- WSL2 detection mechanism
+- Landlock ABI version table with kernel version mapping
+- seccomp user notification limitation explained (what it is, why it fails, what nono does)
+- Credential proxy behavior on WSL2
+- Workarounds: custom kernel build instructions, block-all network
+- Future improvements: Landlock V4, eBPF LSM, microsoft/WSL#9548
+
+Added link to WSL2 page in `docs/cli/internals/index.mdx`.
 
 ---
 

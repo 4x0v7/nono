@@ -627,8 +627,7 @@ pub fn execute_supervised(
             #[cfg(target_os = "linux")]
             {
                 if config.capability_elevation && nono::sandbox::is_wsl2() {
-                    let msg = b"nono: WSL2 detected, skipping seccomp-notify \
-                                (capability elevation unavailable)\n";
+                    let msg = b"nono: WSL2 detected, skipping seccomp-notify (capability elevation unavailable)\n";
                     unsafe {
                         libc::write(
                             libc::STDERR_FILENO,
@@ -686,8 +685,7 @@ pub fn execute_supervised(
                 // On WSL2 this flag should already be false (guarded in main.rs),
                 // but check again to avoid EBUSY / _exit(126).
                 if config.seccomp_proxy_fallback && nono::sandbox::is_wsl2() {
-                    let msg = b"nono: WSL2 detected, skipping seccomp proxy filter \
-                                (proxy network filtering unavailable)\n";
+                    let msg = b"nono: WSL2 detected, skipping seccomp proxy filter (proxy network filtering unavailable)\n";
                     unsafe {
                         libc::write(
                             libc::STDERR_FILENO,
