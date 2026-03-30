@@ -35,6 +35,7 @@ const RESIZE_MESSAGE_LEN: usize = 4;
 const SCROLLBACK_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const VT_SCROLLBACK_ROWS: usize = 10_000;
 const DEFAULT_DETACH_SEQUENCE: [u8; 2] = [0x1d, b'd'];
+const MAX_ENHANCED_KEY_SEQUENCE_LEN: usize = 32;
 const ATTACH_ACK_OK: u8 = 0;
 const ATTACH_ACK_BUSY: u8 = 1;
 const ATTACH_ACK_DENIED: u8 = 2;
@@ -156,6 +157,8 @@ pub struct PtyProxy {
     detach_sequence: Vec<u8>,
     /// Number of bytes currently matched against `detach_sequence`.
     pending_detach_match_len: usize,
+    /// Buffered enhanced key report bytes for the final detach key.
+    pending_detach_escape: Vec<u8>,
     /// In-band detach requested from the attached client.
     detach_requested: bool,
 }
@@ -257,6 +260,7 @@ impl PtyProxy {
                 .filter(|sequence| !sequence.is_empty())
                 .map_or_else(|| DEFAULT_DETACH_SEQUENCE.to_vec(), ToOwned::to_owned),
             pending_detach_match_len: 0,
+            pending_detach_escape: Vec::new(),
             detach_requested: false,
         })
     }
@@ -274,6 +278,7 @@ impl PtyProxy {
         }
         self.resize_notifier = None;
         self.pending_detach_match_len = 0;
+        self.pending_detach_escape.clear();
         self.persist_attachment_state(crate::session::SessionAttachment::Detached);
         debug!("PTY proxy detached");
         detached_terminal
@@ -629,26 +634,34 @@ impl PtyProxy {
     }
     fn filter_client_input(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut forwarded = Vec::with_capacity(bytes.len());
-        let sequence = self.detach_sequence.as_slice();
         for &byte in bytes {
-            if sequence.is_empty() {
+            if self.maybe_consume_enhanced_detach_byte(byte, &mut forwarded) {
+                continue;
+            }
+
+            if self.detach_sequence.is_empty() {
                 forwarded.push(byte);
                 continue;
             }
 
-            if byte == sequence[self.pending_detach_match_len] {
+            if byte == self.detach_sequence[self.pending_detach_match_len] {
                 self.pending_detach_match_len += 1;
-                if self.pending_detach_match_len == sequence.len() {
+                if self.pending_detach_match_len == self.detach_sequence.len() {
                     self.detach_requested = true;
                     self.pending_detach_match_len = 0;
                 }
                 continue;
             }
 
+            if self.should_start_enhanced_detach_match(byte) {
+                self.pending_detach_escape.push(byte);
+                continue;
+            }
+
             if self.pending_detach_match_len > 0 {
-                forwarded.extend_from_slice(&sequence[..self.pending_detach_match_len]);
+                forwarded.extend_from_slice(&self.detach_sequence[..self.pending_detach_match_len]);
                 self.pending_detach_match_len = 0;
-                if byte == sequence[0] {
+                if byte == self.detach_sequence[0] {
                     self.pending_detach_match_len = 1;
                     continue;
                 }
@@ -658,6 +671,120 @@ impl PtyProxy {
         }
         forwarded
     }
+
+    fn should_start_enhanced_detach_match(&self, byte: u8) -> bool {
+        byte == b'\x1b'
+            && self.pending_detach_match_len + 1 == self.detach_sequence.len()
+            && self
+                .detach_sequence
+                .last()
+                .copied()
+                .is_some_and(|key| key.is_ascii_graphic() || key == b' ')
+    }
+
+    fn maybe_consume_enhanced_detach_byte(&mut self, byte: u8, forwarded: &mut Vec<u8>) -> bool {
+        if self.pending_detach_escape.is_empty() {
+            return false;
+        }
+
+        self.pending_detach_escape.push(byte);
+        let Some(expected_key) = self.detach_sequence.last().copied() else {
+            self.flush_pending_detach_escape(forwarded);
+            return true;
+        };
+
+        match match_enhanced_key_sequence(&self.pending_detach_escape, expected_key) {
+            EnhancedKeyMatch::Pending => {
+                if self.pending_detach_escape.len() > MAX_ENHANCED_KEY_SEQUENCE_LEN {
+                    self.flush_pending_detach_escape(forwarded);
+                }
+            }
+            EnhancedKeyMatch::Matched => {
+                self.pending_detach_escape.clear();
+                self.pending_detach_match_len = 0;
+                self.detach_requested = true;
+            }
+            EnhancedKeyMatch::Invalid => self.flush_pending_detach_escape(forwarded),
+        }
+
+        true
+    }
+
+    fn flush_pending_detach_escape(&mut self, forwarded: &mut Vec<u8>) {
+        if self.pending_detach_match_len > 0 {
+            forwarded.extend_from_slice(&self.detach_sequence[..self.pending_detach_match_len]);
+            self.pending_detach_match_len = 0;
+        }
+        forwarded.extend_from_slice(&self.pending_detach_escape);
+        self.pending_detach_escape.clear();
+    }
+}
+
+enum EnhancedKeyMatch {
+    Pending,
+    Matched,
+    Invalid,
+}
+
+fn match_enhanced_key_sequence(bytes: &[u8], expected_key: u8) -> EnhancedKeyMatch {
+    if bytes.is_empty() {
+        return EnhancedKeyMatch::Pending;
+    }
+    if bytes[0] != b'\x1b' {
+        return EnhancedKeyMatch::Invalid;
+    }
+    if bytes.len() == 1 {
+        return EnhancedKeyMatch::Pending;
+    }
+    if bytes[1] != b'[' {
+        return EnhancedKeyMatch::Invalid;
+    }
+    if bytes.len() == 2 {
+        return EnhancedKeyMatch::Pending;
+    }
+
+    let payload = &bytes[2..];
+    let Some((&last, body)) = payload.split_last() else {
+        return EnhancedKeyMatch::Pending;
+    };
+
+    if last == b'u' {
+        if body.is_empty()
+            || !body
+                .iter()
+                .all(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+        {
+            return EnhancedKeyMatch::Invalid;
+        }
+        let Some(first_field) = body.split(|b| matches!(b, b';' | b':')).next() else {
+            return EnhancedKeyMatch::Invalid;
+        };
+        if first_field.is_empty() {
+            return EnhancedKeyMatch::Invalid;
+        }
+        let Ok(codepoint) = std::str::from_utf8(first_field)
+            .ok()
+            .and_then(|field| field.parse::<u32>().ok())
+            .ok_or(())
+        else {
+            return EnhancedKeyMatch::Invalid;
+        };
+        return if codepoint == expected_key as u32 {
+            EnhancedKeyMatch::Matched
+        } else {
+            EnhancedKeyMatch::Invalid
+        };
+    }
+
+    if (last.is_ascii_digit() || matches!(last, b';' | b':'))
+        && body
+            .iter()
+            .all(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+    {
+        return EnhancedKeyMatch::Pending;
+    }
+
+    EnhancedKeyMatch::Invalid
 }
 
 fn select_attach_replay_bytes(
@@ -1417,6 +1544,7 @@ mod tests {
             screen: ScreenState::new(24, 80),
             detach_sequence: sequence.to_vec(),
             pending_detach_match_len: 0,
+            pending_detach_escape: Vec::new(),
             detach_requested: false,
         }
     }
@@ -1497,6 +1625,7 @@ mod tests {
         let _ = proxy.detach();
 
         assert_eq!(proxy.pending_detach_match_len, 0);
+        assert!(proxy.pending_detach_escape.is_empty());
         let forwarded = proxy.filter_client_input(b"x");
         assert_eq!(forwarded, b"x");
         assert!(!proxy.take_detach_request());
@@ -1523,6 +1652,34 @@ mod tests {
         let mut proxy = build_test_proxy(&DEFAULT_DETACH_SEQUENCE);
         let forwarded = proxy.filter_client_input(&[0x1d, b'x']);
         assert_eq!(forwarded, vec![0x1d, b'x']);
+        assert!(!proxy.take_detach_request());
+    }
+
+    #[test]
+    fn filter_client_input_detaches_on_enhanced_csi_u_suffix() {
+        let mut proxy = build_test_proxy(&DEFAULT_DETACH_SEQUENCE);
+        let forwarded = proxy.filter_client_input(b"\x1d\x1b[100;1u");
+        assert!(forwarded.is_empty());
+        assert!(proxy.take_detach_request());
+    }
+
+    #[test]
+    fn filter_client_input_detaches_on_chunked_enhanced_csi_u_suffix() {
+        let mut proxy = build_test_proxy(&DEFAULT_DETACH_SEQUENCE);
+        let forwarded = proxy.filter_client_input(b"\x1d\x1b[10");
+        assert!(forwarded.is_empty());
+        assert!(!proxy.take_detach_request());
+
+        let forwarded = proxy.filter_client_input(b"0;1u");
+        assert!(forwarded.is_empty());
+        assert!(proxy.take_detach_request());
+    }
+
+    #[test]
+    fn filter_client_input_forwards_invalid_enhanced_suffix() {
+        let mut proxy = build_test_proxy(&DEFAULT_DETACH_SEQUENCE);
+        let forwarded = proxy.filter_client_input(b"\x1d\x1b[120;1u");
+        assert_eq!(forwarded, b"\x1d\x1b[120;1u");
         assert!(!proxy.take_detach_request());
     }
 }
