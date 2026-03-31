@@ -44,12 +44,6 @@ fn missing_version_rejected() {
 }
 
 #[test]
-fn unknown_fields_rejected() {
-    let json = r#"{ "version": "0.1.0", "bogus": true }"#;
-    assert!(CapabilityManifest::from_json(json).is_err());
-}
-
-#[test]
 fn filesystem_grants_deserialize() {
     let json = r#"{
         "version": "0.1.0",

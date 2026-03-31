@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nono.dev/schemas/capability-manifest.schema.json",
   "title": "nono Capability Manifest",
-  "description": "A fully-resolved, portable capability manifest describing what a nono sandbox enforces. Manifests are the machine-consumable contract for sandbox configuration — they contain no inheritance, no legacy aliases, and no composition. Profiles compile down to manifests.",
+  "description": "A fully-resolved, portable capability manifest describing what a nono sandbox enforces. Manifests are the machine-consumable contract for sandbox configuration — they contain no inheritance, no legacy aliases, and no composition. Profiles compile down to manifests. NOTE: additionalProperties is true during schema development to allow forward-compatible evolution without breaking existing consumers. Switch to false once the schema stabilizes (post-1.0).",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": ["version"],
   "properties": {
     "$schema": {
@@ -43,7 +43,7 @@
     "Filesystem": {
       "type": "object",
       "description": "Filesystem capability grants and denials. All paths are unresolved strings — canonicalization happens at enforcement time to keep manifests portable across machines.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "grants": {
           "type": "array",
@@ -60,7 +60,7 @@
     "FsGrant": {
       "type": "object",
       "description": "A filesystem access grant for a single path.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["path", "access"],
       "properties": {
         "path": {
@@ -92,7 +92,7 @@
     "FsDeny": {
       "type": "object",
       "description": "A filesystem path to deny access to.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["path"],
       "properties": {
         "path": {
@@ -105,7 +105,7 @@
     "Network": {
       "type": "object",
       "description": "Network access policy. Controls outbound connectivity, domain filtering, L7 endpoint restrictions, and port allowlists.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "mode": {
           "$ref": "#/$defs/NetworkMode",
@@ -141,7 +141,7 @@
     "NetworkEndpoint": {
       "type": "object",
       "description": "An L7 endpoint definition with host-level access and optional method+path filtering.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["host"],
       "properties": {
         "host": {
@@ -159,7 +159,7 @@
     "EndpointRule": {
       "type": "object",
       "description": "HTTP method+path access rule for restricting which API endpoints are accessible.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["method", "path"],
       "properties": {
         "method": {
@@ -177,7 +177,7 @@
     "PortConfig": {
       "type": "object",
       "description": "TCP port allowlists.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "connect": {
           "type": "array",
@@ -199,7 +199,7 @@
     "Credential": {
       "type": "object",
       "description": "A credential route definition for the reverse proxy. Defines how to route requests to an upstream service and inject credentials the sandboxed process never sees.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": ["name", "upstream", "source"],
       "properties": {
         "name": {
@@ -231,7 +231,7 @@
     "CredentialInject": {
       "type": "object",
       "description": "Configuration for how a credential is injected into proxied requests.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "mode": {
           "$ref": "#/$defs/InjectMode",
@@ -270,7 +270,7 @@
     "Process": {
       "type": "object",
       "description": "Process-level isolation and execution configuration.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "allowed_commands": {
           "type": "array",
@@ -327,7 +327,7 @@
     "Rollback": {
       "type": "object",
       "description": "Rollback snapshot configuration.",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "properties": {
         "enabled": {
           "type": "boolean",

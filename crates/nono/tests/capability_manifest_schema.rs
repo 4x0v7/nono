@@ -593,35 +593,6 @@ fn rejects_wrong_version_value() {
     );
 }
 
-// --- Additional properties ---
-
-#[test]
-fn rejects_unknown_top_level_fields() {
-    let json = r#"{
-        "version": "0.1.0",
-        "unknown_field": true
-    }"#;
-    assert!(
-        validate_against_schema(json).is_err(),
-        "unknown top-level fields should be rejected"
-    );
-}
-
-#[test]
-fn rejects_unknown_filesystem_fields() {
-    let json = r#"{
-        "version": "0.1.0",
-        "filesystem": {
-            "grants": [],
-            "execute": ["/usr/bin"]
-        }
-    }"#;
-    assert!(
-        validate_against_schema(json).is_err(),
-        "unknown filesystem fields should be rejected"
-    );
-}
-
 // --- Full realistic manifest ---
 
 #[test]
