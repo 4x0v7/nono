@@ -32,6 +32,9 @@ mod trust_keystore;
 mod trust_scan;
 mod update_check;
 
+#[cfg(test)]
+mod test_env;
+
 use capability_ext::CapabilitySetExt;
 use clap::Parser;
 use cli::{

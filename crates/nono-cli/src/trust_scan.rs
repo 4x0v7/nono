@@ -1197,6 +1197,7 @@ mod tests {
 
     #[test]
     fn load_scan_policy_with_trust_override_skips_verification() {
+        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         // Isolate from the real user config dir so a stale trust-policy.json
         // on the developer's machine doesn't interfere with the test.

@@ -1640,6 +1640,7 @@ mod tests {
 
     #[test]
     fn test_expand_vars_xdg_state_home() {
+        let _guard = crate::test_env::ENV_LOCK.lock().unwrap();
         // $XDG_STATE_HOME must be expanded so that profiles and deny rules
         // can reference it portably. Without this, users cannot write
         // add_deny_access: ["$XDG_STATE_HOME"] and the variable is treated
