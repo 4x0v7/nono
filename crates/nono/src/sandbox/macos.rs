@@ -398,7 +398,10 @@ fn generate_profile(caps: &CapabilitySet) -> Result<String> {
             profile.push_str("(allow signal)\n");
         }
     }
-    profile.push_str("(allow system-socket)\n");
+    // system-socket is NOT granted globally — each NetworkMode branch emits
+    // only the socket domains it needs (AF_UNIX for DNS, AF_INET/AF_INET6
+    // for TCP). AllowAll emits the blanket rule. This prevents restricted
+    // modes from creating arbitrary socket types.
     profile.push_str("(allow system-fsctl)\n");
     profile.push_str("(allow system-info)\n");
 
@@ -496,10 +499,23 @@ fn generate_profile(caps: &CapabilitySet) -> Result<String> {
     }
 
     // Network rules
+    //
+    // DNS resolution rules for restricted modes (Blocked/ProxyOnly):
+    // macOS resolves all DNS through /var/run/mDNSResponder (a Unix domain
+    // socket). Seatbelt classifies connect(2) on Unix sockets as
+    // network-outbound, so (deny network*) blocks DNS. These rules allow
+    // AF_UNIX socket creation and outbound to the mDNSResponder path (both
+    // /var/run and /private/var/run since /var is a symlink on macOS).
+    const MDNS_RULES: &str = "\
+(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))\n\
+(allow network-outbound (path \"/private/var/run/mDNSResponder\"))\n\
+(allow network-outbound (path \"/var/run/mDNSResponder\"))\n";
+
     let localhost_ports = caps.localhost_ports();
     match caps.network_mode() {
         NetworkMode::Blocked => {
             profile.push_str("(deny network*)\n");
+            profile.push_str(MDNS_RULES);
             if !localhost_ports.is_empty() {
                 // Allow system-socket for TCP (required for connect/bind)
                 profile.push_str(
@@ -521,8 +537,8 @@ fn generate_profile(caps: &CapabilitySet) -> Result<String> {
         }
         NetworkMode::ProxyOnly { port, bind_ports } => {
             // Block all network, then allow only localhost TCP to the proxy port.
-            // system-socket is required for TCP connect to function.
             profile.push_str("(deny network*)\n");
+            profile.push_str(MDNS_RULES);
             profile.push_str(&format!(
                 "(allow network-outbound (remote tcp \"localhost:{}\"))\n",
                 port
@@ -533,8 +549,7 @@ fn generate_profile(caps: &CapabilitySet) -> Result<String> {
                     lp
                 ));
             }
-            // Scope system-socket to TCP only. Without this restriction,
-            // the child could create Unix domain sockets for local IPC.
+            // Scope system-socket for TCP (required for connect/bind to proxy).
             profile.push_str(
                 "(allow system-socket (socket-domain AF_INET) (socket-type SOCK_STREAM))\n",
             );
@@ -550,6 +565,7 @@ fn generate_profile(caps: &CapabilitySet) -> Result<String> {
             }
         }
         NetworkMode::AllowAll => {
+            profile.push_str("(allow system-socket)\n");
             profile.push_str("(allow network-outbound)\n");
             profile.push_str("(allow network-inbound)\n");
             profile.push_str("(allow network-bind)\n");
@@ -689,7 +705,8 @@ mod tests {
         let profile = generate_profile(&caps).unwrap();
 
         assert!(profile.contains("(deny network*)"));
-        assert!(!profile.contains("(allow network-outbound)"));
+        // Should NOT have general outbound allow (only mDNSResponder path allows)
+        assert!(!profile.contains("(allow network-outbound)\n"));
     }
 
     #[test]
@@ -969,7 +986,14 @@ mod tests {
         // Should allow only localhost TCP to proxy port
         assert!(profile.contains("(allow network-outbound (remote tcp \"localhost:54321\"))"));
         // Should allow system-socket for TCP connect
-        assert!(profile.contains("(allow system-socket)"));
+        assert!(profile.contains("(allow system-socket"));
+        // Should allow DNS via mDNSResponder Unix socket (#588)
+        assert!(
+            profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))")
+        );
+        assert!(profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"));
+        assert!(profile
+            .contains("(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"));
         // Should NOT have general outbound allow
         assert!(!profile.contains("(allow network-outbound)\n"));
         // Should NOT have bind/inbound without bind_ports
@@ -987,7 +1011,12 @@ mod tests {
         // Should allow only localhost TCP to proxy port
         assert!(profile.contains("(allow network-outbound (remote tcp \"localhost:54321\"))"));
         // Should allow system-socket for TCP connect
-        assert!(profile.contains("(allow system-socket)"));
+        assert!(profile.contains("(allow system-socket"));
+        // Should allow DNS via mDNSResponder Unix socket (#588)
+        assert!(
+            profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))")
+        );
+        assert!(profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"));
         // Should have bind and inbound allowed (blanket, since Seatbelt can't filter by port)
         assert!(profile.contains("(allow network-bind)"));
         assert!(profile.contains("(allow network-inbound)"));
@@ -1117,6 +1146,13 @@ mod tests {
         assert!(profile.contains("(allow network-bind)"));
         assert!(profile.contains("(allow network-inbound)"));
         assert!(profile.contains("(allow system-socket"));
+        // Should allow DNS via mDNSResponder Unix socket (#588)
+        assert!(
+            profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))")
+        );
+        assert!(profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"));
+        assert!(profile
+            .contains("(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"));
     }
 
     #[test]
@@ -1146,5 +1182,66 @@ mod tests {
         assert!(profile.contains("(allow network-inbound)"));
         assert!(profile.contains("(allow network-bind)"));
         assert!(!profile.contains("(deny network*)"));
+    }
+
+    #[test]
+    fn test_generate_profile_dns_allowed_in_proxy_mode() {
+        // Regression test for #588: proxy mode must allow DNS resolution
+        // via the mDNSResponder Unix socket, otherwise all name resolution
+        // fails inside the sandbox.
+        let caps = CapabilitySet::new().proxy_only(12345);
+        let profile = generate_profile(&caps).unwrap();
+
+        // mDNSResponder socket must be reachable (both symlink and real path)
+        assert!(
+            profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))"),
+            "must allow mDNSResponder at canonical path"
+        );
+        assert!(
+            profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"),
+            "must allow mDNSResponder at symlink path"
+        );
+        // AF_UNIX system-socket is needed to create the Unix domain socket
+        assert!(
+            profile.contains(
+                "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"
+            ),
+            "must allow AF_UNIX SOCK_STREAM for mDNSResponder"
+        );
+    }
+
+    #[test]
+    fn test_generate_profile_dns_allowed_in_blocked_mode() {
+        // Regression test for #588: blocked mode with (deny network*) must
+        // also allow DNS resolution via mDNSResponder.
+        let caps = CapabilitySet::new().block_network();
+        let profile = generate_profile(&caps).unwrap();
+
+        assert!(profile.contains("(deny network*)"));
+        assert!(
+            profile.contains("(allow network-outbound (path \"/private/var/run/mDNSResponder\"))"),
+            "blocked mode must allow mDNSResponder at canonical path"
+        );
+        assert!(
+            profile.contains("(allow network-outbound (path \"/var/run/mDNSResponder\"))"),
+            "blocked mode must allow mDNSResponder at symlink path"
+        );
+        assert!(
+            profile.contains(
+                "(allow system-socket (socket-domain AF_UNIX) (socket-type SOCK_STREAM))"
+            ),
+            "blocked mode must allow AF_UNIX SOCK_STREAM for mDNSResponder"
+        );
+    }
+
+    #[test]
+    fn test_generate_profile_dns_not_needed_in_allow_all() {
+        // AllowAll already permits all network — no special mDNSResponder
+        // rules needed (and none should appear since there's no deny network*).
+        let caps = CapabilitySet::new();
+        let profile = generate_profile(&caps).unwrap();
+
+        assert!(!profile.contains("(deny network*)"));
+        assert!(!profile.contains("mDNSResponder"));
     }
 }
