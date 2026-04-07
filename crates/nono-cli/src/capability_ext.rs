@@ -651,19 +651,23 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_from_args_skips_linux_temp_root_when_home_is_nested() {
+        // Use `keep()` so the temp dir is NOT auto-deleted. Tests that call
+        // `tempdir()` concurrently (without the env lock) may create dirs
+        // inside our temp_root while TMPDIR points to it. If we deleted it,
+        // those dirs would vanish and cause flaky failures.
+        let temp_root = tempdir().expect("tmpdir").keep();
+        let home = temp_root.join("home");
+        let allowed = temp_root.join("other");
+        std::fs::create_dir_all(&home).expect("create home");
+        std::fs::create_dir_all(&allowed).expect("create allowed dir");
+
         let _guard = match crate::test_env::ENV_LOCK.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        let temp_root = tempdir().expect("tmpdir");
-        let home = temp_root.path().join("home");
-        let allowed = temp_root.path().join("other");
-        std::fs::create_dir_all(&home).expect("create home");
-        std::fs::create_dir_all(&allowed).expect("create allowed dir");
-
         let home_str = home.to_string_lossy().into_owned();
-        let tmpdir_str = temp_root.path().to_string_lossy().into_owned();
+        let tmpdir_str = temp_root.to_string_lossy().into_owned();
         let _env = crate::test_env::EnvVarGuard::set_all(&[
             ("HOME", home_str.as_str()),
             ("TMPDIR", tmpdir_str.as_str()),

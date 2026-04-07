@@ -1839,23 +1839,28 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn test_should_skip_system_write_linux_tmp_grant_when_home_is_nested() {
+        // Use `keep()` so the temp dir is NOT auto-deleted. Tests that call
+        // `tempdir()` concurrently (without the env lock) may create dirs
+        // inside our temp_root while TMPDIR points to it. If we deleted it,
+        // those dirs would vanish and cause flaky failures.  The OS reclaims
+        // /tmp contents on its own schedule.
+        let temp_root = tempfile::tempdir().expect("tmpdir").keep();
+        let home = temp_root.join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
         let _guard = match crate::test_env::ENV_LOCK.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        let temp_root = tempfile::tempdir().expect("tmpdir");
-        let home = temp_root.path().join("home");
-        std::fs::create_dir_all(&home).expect("create home");
-
         let _env = crate::test_env::EnvVarGuard::set_all(&[
             ("HOME", home.to_str().expect("home path")),
-            ("TMPDIR", temp_root.path().to_str().expect("tmpdir path")),
+            ("TMPDIR", temp_root.to_str().expect("tmpdir path")),
         ]);
 
         let skip_tmp = should_skip_group_allow_path("system_write_linux", Path::new("/tmp"))
             .expect("check /tmp skip");
-        let skip_tmpdir = should_skip_group_allow_path("system_write_linux", temp_root.path())
+        let skip_tmpdir = should_skip_group_allow_path("system_write_linux", &temp_root)
             .expect("check TMPDIR skip");
 
         assert!(
