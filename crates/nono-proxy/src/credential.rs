@@ -90,10 +90,15 @@ impl CredentialStore {
         let mut credentials = HashMap::new();
 
         for route in routes {
+            // Normalize prefix: strip leading/trailing slashes so it matches
+            // the bare service name returned by parse_service_prefix() in
+            // the reverse proxy path (e.g., "/anthropic" -> "anthropic").
+            let normalized_prefix = route.prefix.trim_matches('/').to_string();
+
             if let Some(ref key) = route.credential_key {
                 debug!(
                     "Loading credential for route prefix: {} (mode: {:?})",
-                    route.prefix, route.inject_mode
+                    normalized_prefix, route.inject_mode
                 );
 
                 let secret = match nono::keystore::load_secret_by_ref(KEYRING_SERVICE, key) {
@@ -101,7 +106,7 @@ impl CredentialStore {
                     Err(nono::NonoError::SecretNotFound(msg)) => {
                         debug!(
                             "Credential '{}' not available, skipping route: {}",
-                            route.prefix, msg
+                            normalized_prefix, msg
                         );
                         continue;
                     }
@@ -138,7 +143,7 @@ impl CredentialStore {
                     Some(ref ca_path) => {
                         debug!(
                             "Building TLS connector with custom CA for route '{}': {}",
-                            route.prefix, ca_path
+                            normalized_prefix, ca_path
                         );
                         Some(build_tls_connector_with_ca(ca_path)?)
                     }
@@ -146,7 +151,7 @@ impl CredentialStore {
                 };
 
                 credentials.insert(
-                    route.prefix.clone(),
+                    normalized_prefix.clone(),
                     LoadedCredential {
                         inject_mode: route.inject_mode.clone(),
                         upstream: route.upstream.clone(),
@@ -158,7 +163,10 @@ impl CredentialStore {
                         query_param_name: route.query_param_name.clone(),
                         endpoint_rules: CompiledEndpointRules::compile(&route.endpoint_rules)
                             .map_err(|e| {
-                                ProxyError::Credential(format!("route '{}': {}", route.prefix, e))
+                                ProxyError::Credential(format!(
+                                    "route '{}': {}",
+                                    normalized_prefix, e
+                                ))
                             })?,
                         tls_connector,
                     },

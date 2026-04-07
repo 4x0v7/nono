@@ -73,7 +73,7 @@ fn default_bind_addr() -> IpAddr {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteConfig {
     /// Path prefix for routing (e.g., "openai").
-    /// Must NOT include a leading slash — it is a bare service name, not a URL path.
+    /// Must NOT include leading or trailing slashes — it is a bare service name, not a URL path.
     pub prefix: String,
 
     /// Upstream URL to forward to (e.g., "https://api.openai.com")
