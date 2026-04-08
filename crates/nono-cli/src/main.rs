@@ -496,4 +496,18 @@ mod tests {
         assert!(!enabled);
         assert!(caps.platform_rules().is_empty());
     }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn test_maybe_enable_macos_gpu_rejects_on_non_macos() {
+        let mut caps = CapabilitySet::new();
+
+        let err =
+            maybe_enable_macos_gpu(&mut caps, true, true).expect_err("should fail on non-macOS");
+
+        assert!(
+            err.to_string().contains("only supported on macOS"),
+            "error should mention macOS support"
+        );
+    }
 }
