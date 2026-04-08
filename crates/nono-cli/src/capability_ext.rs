@@ -77,26 +77,15 @@ fn new_future_file_capability(path: &Path, access: AccessMode) -> Result<FsCapab
 
 #[cfg(target_os = "macos")]
 fn resolve_missing_leaf_path(path: &Path) -> Result<PathBuf> {
-    let mut suffix = Vec::new();
-    let mut current = path;
-
-    loop {
-        match current.canonicalize() {
+    for ancestor in path.ancestors() {
+        match ancestor.canonicalize() {
             Ok(mut canonical) => {
-                for part in suffix.iter().rev() {
-                    canonical.push(part);
+                if let Ok(relative) = path.strip_prefix(ancestor) {
+                    canonical.push(relative);
                 }
                 return Ok(canonical);
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let name = current
-                    .file_name()
-                    .ok_or_else(|| NonoError::PathNotFound(path.to_path_buf()))?;
-                suffix.push(name.to_os_string());
-                current = current
-                    .parent()
-                    .ok_or_else(|| NonoError::PathNotFound(path.to_path_buf()))?;
-            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
                 return Err(NonoError::PathCanonicalization {
                     path: path.to_path_buf(),
@@ -105,6 +94,8 @@ fn resolve_missing_leaf_path(path: &Path) -> Result<PathBuf> {
             }
         }
     }
+
+    Err(NonoError::PathNotFound(path.to_path_buf()))
 }
 
 fn apply_profile_dir_allows(
