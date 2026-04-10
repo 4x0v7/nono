@@ -163,6 +163,22 @@ pub struct CustomCredentialDef {
     /// ambiguity.
     #[serde(default)]
     pub tls_ca: Option<String>,
+
+    /// Optional path to a PEM-encoded client certificate for upstream mTLS.
+    ///
+    /// When set together with `tls_client_key`, the proxy presents this
+    /// certificate to the upstream during TLS handshake. Required for
+    /// upstreams that enforce mutual TLS (e.g., Kubernetes API servers
+    /// configured with client-certificate authentication).
+    #[serde(default)]
+    pub tls_client_cert: Option<String>,
+
+    /// Optional path to a PEM-encoded private key for upstream mTLS.
+    ///
+    /// Must be set together with `tls_client_cert`. The key must correspond
+    /// to the certificate in `tls_client_cert`.
+    #[serde(default)]
+    pub tls_client_key: Option<String>,
 }
 
 fn default_inject_header() -> String {
@@ -2159,6 +2175,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         }
     }
 
@@ -2319,6 +2337,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         assert!(validate_custom_credential("telegram", &cred).is_ok());
     }
@@ -2337,6 +2357,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("telegram", &cred);
         let err = result.expect_err("missing path_pattern should be rejected");
@@ -2357,6 +2379,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("telegram", &cred);
         let err = result.expect_err("pattern without {} should be rejected");
@@ -2377,6 +2401,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         assert!(validate_custom_credential("telegram", &cred).is_ok());
     }
@@ -2395,6 +2421,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("telegram", &cred);
         let err = result.expect_err("replacement without {} should be rejected");
@@ -2415,6 +2443,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         assert!(validate_custom_credential("google_maps", &cred).is_ok());
     }
@@ -2433,6 +2463,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("google_maps", &cred);
         let err = result.expect_err("missing query_param_name should be rejected");
@@ -2453,6 +2485,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("google_maps", &cred);
         let err = result.expect_err("empty query_param_name should be rejected");
@@ -2473,6 +2507,8 @@ mod tests {
             env_var: None,
             endpoint_rules: vec![],
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         // BasicAuth mode doesn't require additional fields
         // Credential value is expected to be "username:password" format
@@ -2796,6 +2832,8 @@ mod tests {
                 env_var: None,
                 endpoint_rules: vec![],
                 tls_ca: None,
+                tls_client_cert: None,
+                tls_client_key: None,
             },
         );
 
@@ -2814,6 +2852,8 @@ mod tests {
                 env_var: None,
                 endpoint_rules: vec![],
                 tls_ca: None,
+                tls_client_cert: None,
+                tls_client_key: None,
             },
         );
 
@@ -2950,6 +2990,8 @@ mod tests {
                 env_var: None,
                 endpoint_rules: vec![],
                 tls_ca: None,
+                tls_client_cert: None,
+                tls_client_key: None,
             },
         );
 
@@ -2968,6 +3010,8 @@ mod tests {
                 env_var: None,
                 endpoint_rules: vec![],
                 tls_ca: None,
+                tls_client_cert: None,
+                tls_client_key: None,
             },
         );
 
@@ -4168,6 +4212,8 @@ mod tests {
             endpoint_rules: vec![],
             env_var: Some("EXAMPLE_API_KEY".to_string()),
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         assert!(
             validate_custom_credential("example", &cred).is_ok(),
@@ -4189,6 +4235,8 @@ mod tests {
             endpoint_rules: vec![],
             env_var: None,
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("example", &cred);
         let err = result.expect_err("file:// URI without env_var should be rejected");
@@ -4213,6 +4261,8 @@ mod tests {
             endpoint_rules: vec![],
             env_var: Some("EXAMPLE_API_KEY".to_string()),
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("example", &cred);
         let err = result.expect_err("file:// URI with relative path should be rejected");
@@ -4237,6 +4287,8 @@ mod tests {
             endpoint_rules: vec![],
             env_var: Some("EXAMPLE_API_KEY".to_string()),
             tls_ca: None,
+            tls_client_cert: None,
+            tls_client_key: None,
         };
         let result = validate_custom_credential("example", &cred);
         assert!(
