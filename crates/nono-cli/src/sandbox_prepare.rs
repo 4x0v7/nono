@@ -69,6 +69,7 @@ pub(crate) struct PreparedSandbox {
     #[cfg(target_os = "linux")]
     pub(crate) wsl2_proxy_policy: crate::profile::Wsl2ProxyPolicy,
     pub(crate) allow_launch_services_active: bool,
+    pub(crate) allow_gpu_active: bool,
     pub(crate) open_url_origins: Vec<String>,
     pub(crate) open_url_allow_localhost: bool,
     pub(crate) override_deny_paths: Vec<PathBuf>,
@@ -156,6 +157,67 @@ pub(crate) fn maybe_enable_macos_launch_services(
         ));
     }
     Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn maybe_enable_macos_gpu(
+    caps: &mut CapabilitySet,
+    cli_requested: bool,
+    profile_allowed: bool,
+) -> Result<bool> {
+    if !cli_requested {
+        return Ok(false);
+    }
+
+    if !profile_allowed {
+        return Err(NonoError::ConfigParse(
+            "--allow-gpu requires the selected profile to opt into allow_gpu".to_string(),
+        ));
+    }
+
+    // Minimal IOKit surface for Metal compute on Apple Silicon. Verified that
+    // `AGXDeviceUserClient` and `IOSurfaceRootUserClient` are sufficient for
+    // the full pipeline and offscreen rendering. `AGXSharedUserClient` is only
+    // needed for cross process GPU resource sharing (such as WebKit's GPU
+    // process). Adding `iokit-connection "IOGPU"` would cover more user
+    // clients such as `IOGPUSurfaceMTL` and `IOGPUGLDrawableUserClient` which
+    // are needed for display output and OpenGL. Intel Macs require
+    // `IntelAccelerator`, `IOAccelerator`, and `AMDRadeonX*` classes which are
+    // not yet supported.
+    caps.add_platform_rule(
+        "(allow iokit-open \
+            (iokit-user-client-class \
+                \"AGXDeviceUserClient\" \
+                \"IOSurfaceRootUserClient\"))",
+    )?;
+    warn!("--allow-gpu enabled: allowing access to GPU");
+    Ok(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn maybe_enable_macos_gpu(
+    _caps: &mut CapabilitySet,
+    cli_requested: bool,
+    _profile_allowed: bool,
+) -> Result<bool> {
+    if cli_requested {
+        return Err(NonoError::ConfigParse(
+            "--allow-gpu is only supported on macOS".to_string(),
+        ));
+    }
+    Ok(false)
+}
+
+pub(crate) fn print_allow_gpu_warning(silent: bool) {
+    if silent {
+        return;
+    }
+
+    eprintln!(
+        "  {}",
+        "WARNING: --allow-gpu permits the sandboxed process to access the GPU.".yellow()
+    );
+    eprintln!("  GPU access may expose additional attack surface. Only use when your workload requires it.");
 }
 
 pub(crate) fn print_allow_launch_services_warning(silent: bool) {
@@ -248,6 +310,7 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
                 #[cfg(target_os = "linux")]
                 wsl2_proxy_policy: crate::profile::Wsl2ProxyPolicy::default(),
                 allow_launch_services_active: false,
+                allow_gpu_active: false,
                 open_url_origins: Vec::new(),
                 open_url_allow_localhost: false,
                 override_deny_paths: Vec::new(),
@@ -276,6 +339,7 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
         open_url_origins,
         open_url_allow_localhost,
         allow_launch_services: profile_allow_launch_services,
+        allow_gpu: profile_allow_gpu,
         override_deny_paths,
     } = prepared_profile;
 
@@ -318,6 +382,12 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
         profile_allow_launch_services,
         &open_url_origins,
         open_url_allow_localhost,
+    )?;
+
+    let allow_gpu_active = maybe_enable_macos_gpu(
+        &mut caps,
+        args.allow_gpu,
+        loaded_profile.is_none() || profile_allow_gpu,
     )?;
 
     let cwd_access = if let Some(ref access) = profile_workdir_access {
@@ -404,6 +474,7 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
             #[cfg(target_os = "linux")]
             wsl2_proxy_policy,
             allow_launch_services_active,
+            allow_gpu_active,
             open_url_origins,
             open_url_allow_localhost,
             override_deny_paths,
