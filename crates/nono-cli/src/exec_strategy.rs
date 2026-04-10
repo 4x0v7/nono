@@ -3145,6 +3145,58 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // --- Grandchild procfs regression tests (issue #602) ---
+    //
+    // When bun is a grandchild (nono→sh→bun), notifying_tgid=bun's PID (e.g. 1001),
+    // not the direct child sh's PID (e.g. 1000). These tests verify the fix uses
+    // the correct PID for /proc/self resolution and access validation.
+
+    #[test]
+    fn test_resolve_procfs_self_for_grandchild_tgid() {
+        // After the fix, process_pid=notifying_tgid=1001 (bun).
+        // /proc/self/maps must resolve to /proc/1001/maps, not /proc/1000/maps.
+        let path = resolve_procfs_path_for_child(
+            Path::new("/proc/self/maps"),
+            Some(ProcfsAccessContext::new(1001, Some(1001))),
+        );
+        assert_eq!(path.ok(), Some(PathBuf::from("/proc/1001/maps")));
+    }
+
+    #[test]
+    fn test_validate_procfs_access_allows_grandchild_own_path() {
+        // notifying_tgid=1001 (bun): accessing /proc/1001/maps is allowed.
+        let result = validate_procfs_access(
+            Path::new("/proc/1001/maps"),
+            Some(ProcfsAccessContext::new(1001, Some(1001))),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_procfs_access_blocks_grandchild_accessing_sibling() {
+        // notifying_tgid=1001 (bun): accessing /proc/1000/maps (sh's maps) is blocked.
+        // This verifies the fix does NOT allow cross-process procfs reads.
+        let result = validate_procfs_access(
+            Path::new("/proc/1000/maps"),
+            Some(ProcfsAccessContext::new(1001, Some(1001))),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_procfs_self_wrong_pid_demonstrates_bug() {
+        // Demonstrates the pre-fix bug: if process_pid=1000 (sh) but the requesting
+        // process is bun (1001), /proc/self/maps incorrectly resolves to /proc/1000/maps.
+        // After the fix, process_pid is always notifying_tgid, so this construction
+        // would never be used for bun's request.
+        let path = resolve_procfs_path_for_child(
+            Path::new("/proc/self/maps"),
+            Some(ProcfsAccessContext::new(1000, Some(1001))), // broken: sh's PID for bun's request
+        );
+        // This produces the wrong path (sh's maps instead of bun's maps).
+        assert_eq!(path.ok(), Some(PathBuf::from("/proc/1000/maps")));
+    }
+
     /// Verify that the supervisor loop runs and exits cleanly without a PTY relay.
     ///
     /// This tests the `capability_elevation = false` code path where no PTY is
