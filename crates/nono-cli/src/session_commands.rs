@@ -291,6 +291,14 @@ pub fn run_inspect(args: &InspectArgs) -> Result<()> {
     if let Some(ref rollback) = record.rollback_session {
         println!("Rollback:   {}", rollback);
     }
+    // Only show a distinct Audit line when the audit session is separate from
+    // (or complements) the rollback session. When both are active they share
+    // a single ID and rollback is the more specific label.
+    if let Some(ref audit) = record.audit_session {
+        if record.rollback_session.as_ref() != Some(audit) {
+            println!("Audit:      {}", audit);
+        }
+    }
 
     Ok(())
 }

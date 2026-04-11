@@ -1,8 +1,13 @@
-//! Session discovery and management for the rollback system
+//! Session discovery and management for the audit/rollback system
 //!
-//! Provides functions to discover, load, and manage rollback sessions
-//! stored in `~/.nono/rollbacks/`. This is a CLI concern — the library
-//! provides primitives, the CLI provides session lifecycle management.
+//! Rollback sessions (which have file snapshots) live in `~/.nono/rollbacks/`.
+//! Audit-only sessions (no snapshots, just command + network metadata) live in
+//! `~/.nono/audit/`. Both directories contain subdirectories named by
+//! `session_id`, each holding a `session.json` with [`SessionMetadata`].
+//!
+//! Rollback commands only look at the rollback root. Audit commands look at
+//! both roots so that an audit-only session is visible in `nono audit list`
+//! without being confused for a rollback session by pruning or restore.
 
 use nono::undo::{SessionMetadata, SnapshotManager};
 use nono::{NonoError, Result};
@@ -10,7 +15,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-/// Information about a discovered rollback session
+/// Whether a discovered session carries rollback snapshots or is audit-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    /// Session stored in `~/.nono/rollbacks/` with full snapshot state.
+    Rollback,
+    /// Session stored in `~/.nono/audit/` with metadata only.
+    AuditOnly,
+}
+
+/// Information about a discovered session (rollback or audit-only).
 #[derive(Debug)]
 pub struct SessionInfo {
     /// Session metadata loaded from session.json
@@ -23,6 +37,8 @@ pub struct SessionInfo {
     pub is_alive: bool,
     /// Whether the session appears stale (ended is None and PID is dead)
     pub is_stale: bool,
+    /// Which root directory this session lives under.
+    pub kind: SessionKind,
 }
 
 /// Get the rollback root directory (`~/.nono/rollbacks/`)
@@ -31,22 +47,26 @@ pub fn rollback_root() -> Result<PathBuf> {
     Ok(home.join(".nono").join("rollbacks"))
 }
 
-/// Discover all rollback sessions in `~/.nono/rollbacks/`.
+/// Get the audit-only root directory (`~/.nono/audit/`)
+pub fn audit_root() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or(NonoError::HomeNotFound)?;
+    Ok(home.join(".nono").join("audit"))
+}
+
+/// Scan a single session root directory and load metadata for each subdir.
 ///
-/// Scans the rollback root directory, loads session metadata from each
-/// subdirectory, and enriches with derived data (disk size, alive status).
-/// Sessions with missing or corrupt metadata are skipped.
-pub fn discover_sessions() -> Result<Vec<SessionInfo>> {
-    let root = rollback_root()?;
+/// Sessions with missing or corrupt metadata are silently skipped so that a
+/// single broken session cannot break discovery.
+fn scan_session_root(root: &Path, kind: SessionKind) -> Result<Vec<SessionInfo>> {
     if !root.exists() {
         return Ok(Vec::new());
     }
 
     let mut sessions = Vec::new();
 
-    let entries = fs::read_dir(&root).map_err(|e| {
+    let entries = fs::read_dir(root).map_err(|e| {
         NonoError::Snapshot(format!(
-            "Failed to read rollback directory {}: {e}",
+            "Failed to read session directory {}: {e}",
             root.display()
         ))
     })?;
@@ -79,31 +99,50 @@ pub fn discover_sessions() -> Result<Vec<SessionInfo>> {
             disk_size,
             is_alive,
             is_stale,
+            kind,
         });
     }
-
-    // Sort by start time, newest first
-    sessions.sort_by(|a, b| b.metadata.started.cmp(&a.metadata.started));
 
     Ok(sessions)
 }
 
-/// Load a specific session by ID.
+/// Discover rollback sessions in `~/.nono/rollbacks/`.
 ///
-/// The session_id is validated to prevent path traversal — it must not
-/// contain path separators or `..` components. The resolved path is
-/// verified to be within the rollback root directory.
-pub fn load_session(session_id: &str) -> Result<SessionInfo> {
-    validate_session_id(session_id)?;
+/// Returns only sessions that have an associated rollback session directory
+/// (i.e. snapshots were taken). Audit-only sessions are not included.
+pub fn discover_rollback_sessions() -> Result<Vec<SessionInfo>> {
     let root = rollback_root()?;
+    let mut sessions = scan_session_root(&root, SessionKind::Rollback)?;
+    sessions.sort_by(|a, b| b.metadata.started.cmp(&a.metadata.started));
+    Ok(sessions)
+}
+
+/// Discover all audit-visible sessions (rollback + audit-only).
+///
+/// Both `~/.nono/rollbacks/` and `~/.nono/audit/` are scanned. Rollback
+/// sessions are audit sessions too (they contain the same metadata), so
+/// `nono audit list` shows the union.
+pub fn discover_audit_sessions() -> Result<Vec<SessionInfo>> {
+    let rollback_root = rollback_root()?;
+    let audit_root = audit_root()?;
+
+    let mut sessions = scan_session_root(&rollback_root, SessionKind::Rollback)?;
+    sessions.extend(scan_session_root(&audit_root, SessionKind::AuditOnly)?);
+    sessions.sort_by(|a, b| b.metadata.started.cmp(&a.metadata.started));
+    Ok(sessions)
+}
+
+/// Load a single session from a specific root directory, with path-traversal
+/// protection.
+fn load_session_from(root: &Path, session_id: &str, kind: SessionKind) -> Result<SessionInfo> {
     let dir = root.join(session_id);
 
-    // Defense in depth: verify the resolved path is within rollback root.
+    // Defense in depth: verify the resolved path is within the expected root.
     // Both canonicalizations must succeed -- fail closed if either cannot
     // be resolved (prevents bypassing the traversal check).
     let canonical_root = root.canonicalize().map_err(|e| {
         NonoError::SessionNotFound(format!(
-            "Cannot canonicalize rollback root {}: {}",
+            "Cannot canonicalize session root {}: {}",
             root.display(),
             e
         ))
@@ -132,11 +171,39 @@ pub fn load_session(session_id: &str) -> Result<SessionInfo> {
         disk_size,
         is_alive,
         is_stale,
+        kind,
     })
 }
 
-/// Calculate the total disk usage of all sessions.
-pub fn total_storage_bytes() -> Result<u64> {
+/// Load a rollback session by ID from `~/.nono/rollbacks/`.
+///
+/// The session_id is validated to prevent path traversal — it must not
+/// contain path separators or `..` components.
+pub fn load_rollback_session(session_id: &str) -> Result<SessionInfo> {
+    validate_session_id(session_id)?;
+    let root = rollback_root()?;
+    load_session_from(&root, session_id, SessionKind::Rollback)
+}
+
+/// Load an audit session by ID, checking both rollback and audit roots.
+///
+/// Rollback sessions are preferred so that rich snapshot data is returned
+/// when both directories happen to contain the same ID.
+pub fn load_audit_session(session_id: &str) -> Result<SessionInfo> {
+    validate_session_id(session_id)?;
+    let rollback_root = rollback_root()?;
+    if rollback_root.join(session_id).exists() {
+        return load_session_from(&rollback_root, session_id, SessionKind::Rollback);
+    }
+    let audit_root = audit_root()?;
+    load_session_from(&audit_root, session_id, SessionKind::AuditOnly)
+}
+
+/// Calculate the total disk usage of all rollback sessions.
+///
+/// Only `~/.nono/rollbacks/` is counted; audit-only sessions are not subject
+/// to rollback retention limits.
+pub fn total_rollback_storage_bytes() -> Result<u64> {
     let root = rollback_root()?;
     if !root.exists() {
         return Ok(0);

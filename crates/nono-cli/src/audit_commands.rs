@@ -3,7 +3,9 @@
 //! Handles `nono audit list|show` for viewing the audit trail of sandboxed sessions.
 
 use crate::cli::{AuditArgs, AuditCommands, AuditListArgs, AuditShowArgs};
-use crate::rollback_session::{discover_sessions, load_session, SessionInfo};
+use crate::rollback_session::{
+    discover_audit_sessions, load_audit_session, SessionInfo, SessionKind,
+};
 use crate::theme;
 use colored::Colorize;
 use nono::undo::SnapshotManager;
@@ -30,7 +32,7 @@ pub fn run_audit(args: AuditArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_list(args: AuditListArgs) -> Result<()> {
-    let mut sessions = discover_sessions()?;
+    let mut sessions = discover_audit_sessions()?;
 
     // Apply filters
     sessions = filter_sessions(sessions, &args)?;
@@ -63,10 +65,12 @@ fn cmd_list(args: AuditListArgs) -> Result<()> {
         for s in group {
             let cmd = truncate_command(&s.metadata.command, 35);
             let status = session_status_label(s);
+            let kind = session_kind_label(s.kind);
             eprintln!(
-                "    {} {} {}",
+                "    {} {} {} {}",
                 s.metadata.session_id,
                 status,
+                kind,
                 theme::fg(&cmd, theme::current().subtext),
             );
         }
@@ -180,6 +184,7 @@ fn print_list_json(sessions: &[SessionInfo]) -> Result<()> {
                 "disk_size": s.disk_size,
                 "is_alive": s.is_alive,
                 "is_stale": s.is_stale,
+                "kind": session_kind_json(s.kind),
             })
         })
         .collect();
@@ -195,7 +200,7 @@ fn print_list_json(sessions: &[SessionInfo]) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_show(args: AuditShowArgs) -> Result<()> {
-    let session = load_session(&args.session_id)?;
+    let session = load_audit_session(&args.session_id)?;
 
     if args.json {
         return print_show_json(&session);
@@ -364,6 +369,25 @@ fn session_status_label(s: &SessionInfo) -> colored::ColoredString {
         "orphaned".yellow()
     } else {
         theme::fg("completed", theme::current().subtext)
+    }
+}
+
+/// Short label describing whether a session has rollback snapshots or is
+/// audit-only, shown in `nono audit list` so users can tell at a glance
+/// which sessions can be restored and which only carry network/command
+/// metadata.
+fn session_kind_label(kind: SessionKind) -> colored::ColoredString {
+    match kind {
+        SessionKind::Rollback => "[rollback]".cyan(),
+        SessionKind::AuditOnly => theme::fg("[audit-only]", theme::current().subtext),
+    }
+}
+
+/// JSON form of the session kind for `nono audit list --json`.
+fn session_kind_json(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Rollback => "rollback",
+        SessionKind::AuditOnly => "audit-only",
     }
 }
 

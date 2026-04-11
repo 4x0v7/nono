@@ -2,12 +2,16 @@ use crate::launch_runtime::{rollback_base_exclusions, RollbackLaunchOptions};
 use crate::{config, output, rollback_preflight, rollback_session, rollback_ui};
 use nono::{AccessMode, CapabilitySet, Result};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
 pub(crate) struct AuditState {
     pub(crate) session_id: String,
     pub(crate) session_dir: PathBuf,
+    /// Paths the sandbox had user-granted access to. Used to populate
+    /// `SessionMetadata.tracked_paths` for audit-only sessions so that
+    /// `nono audit list` can group and filter them by project.
+    pub(crate) tracked_paths: Vec<PathBuf>,
 }
 
 pub(crate) struct RollbackRuntimeState {
@@ -16,6 +20,9 @@ pub(crate) struct RollbackRuntimeState {
     pub(crate) tracked_paths: Vec<PathBuf>,
     pub(crate) atomic_temp_before: HashSet<PathBuf>,
     pub(crate) session_id: String,
+    /// Rollback session directory (under `~/.nono/rollbacks/` or a custom
+    /// destination). Shared with audit metadata when both are active.
+    pub(crate) session_dir: PathBuf,
 }
 
 pub(crate) struct RollbackExitContext<'a> {
@@ -47,7 +54,7 @@ fn enforce_rollback_limits(silent: bool) {
         }
     };
 
-    let sessions = match rollback_session::discover_sessions() {
+    let sessions = match rollback_session::discover_rollback_sessions() {
         Ok(sessions) => sessions,
         Err(e) => {
             tracing::warn!("Failed to discover sessions for limit enforcement: {e}");
@@ -86,13 +93,13 @@ fn enforce_rollback_limits(silent: bool) {
         }
     }
 
-    let total = match rollback_session::total_storage_bytes() {
+    let total = match rollback_session::total_rollback_storage_bytes() {
         Ok(total) => total,
         Err(_) => return,
     };
 
     if total > max_storage_bytes {
-        let remaining = match rollback_session::discover_sessions() {
+        let remaining = match rollback_session::discover_rollback_sessions() {
             Ok(sessions) => sessions,
             Err(_) => return,
         };
@@ -124,25 +131,22 @@ fn enforce_rollback_limits(silent: bool) {
     }
 }
 
-/// Create a new session directory with a unique ID.
+/// Generate a fresh session ID of the form `YYYYMMDD-HHMMSS-<pid>`.
 ///
-/// Used by both audit and rollback to establish a session storage location.
-/// When both are active, audit creates the dir and rollback shares it.
-fn ensure_session_dir(rollback_destination: Option<&PathBuf>) -> Result<(String, PathBuf)> {
-    let session_id = format!(
+/// Uses UTC so IDs are stable across timezones and DST transitions, which is
+/// important because rollback session IDs are parsed for sorting and PID
+/// extraction from disk state written on possibly-different hosts.
+fn generate_session_id() -> String {
+    format!(
         "{}-{}",
-        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
         std::process::id()
-    );
+    )
+}
 
-    let rollback_root = match rollback_destination {
-        Some(path) => path.clone(),
-        None => {
-            let home = dirs::home_dir().ok_or(nono::NonoError::HomeNotFound)?;
-            home.join(".nono").join("rollbacks")
-        }
-    };
-    let session_dir = rollback_root.join(&session_id);
+/// Create `<root>/<session_id>` with 0700 permissions.
+fn create_session_dir(root: &Path, session_id: &str) -> Result<PathBuf> {
+    let session_dir = root.join(session_id);
     std::fs::create_dir_all(&session_dir).map_err(|e| {
         nono::NonoError::Snapshot(format!(
             "Failed to create session directory {}: {}",
@@ -160,22 +164,98 @@ fn ensure_session_dir(rollback_destination: Option<&PathBuf>) -> Result<(String,
         }
     }
 
+    Ok(session_dir)
+}
+
+/// Create a new rollback session directory under `~/.nono/rollbacks/`
+/// (or a user-supplied destination) and return the generated ID and path.
+fn ensure_rollback_session_dir(
+    rollback_destination: Option<&PathBuf>,
+) -> Result<(String, PathBuf)> {
+    let root = match rollback_destination {
+        Some(path) => path.clone(),
+        None => rollback_session::rollback_root()?,
+    };
+    let session_id = generate_session_id();
+    let session_dir = create_session_dir(&root, &session_id)?;
     Ok((session_id, session_dir))
 }
 
+/// Create a new audit-only session directory under `~/.nono/audit/`.
+///
+/// Kept separate from `~/.nono/rollbacks/` so audit-only sessions are never
+/// mistaken for rollback history and are not subject to rollback retention
+/// limits.
+fn ensure_audit_session_dir() -> Result<(String, PathBuf)> {
+    let root = rollback_session::audit_root()?;
+    let session_id = generate_session_id();
+    let session_dir = create_session_dir(&root, &session_id)?;
+    Ok((session_id, session_dir))
+}
+
+/// Extract paths the user explicitly granted access to, in a form suitable
+/// for `SessionMetadata.tracked_paths`.
+///
+/// Returns directory capabilities (not files) whose source is `User`. Both
+/// read and write access modes are included so that audit-only sessions still
+/// carry the project root(s) the sandbox operated on — this is what
+/// `nono audit list` groups by and what `--path` filters against.
+fn user_tracked_paths(caps: &CapabilitySet) -> Vec<PathBuf> {
+    caps.fs_capabilities()
+        .iter()
+        .filter(|cap| !cap.is_file && matches!(cap.source, nono::CapabilitySource::User))
+        .map(|cap| cap.resolved.clone())
+        .collect()
+}
+
+/// Describes a rollback session that audit metadata should be co-written into.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RollbackSharing<'a> {
+    pub(crate) session_id: &'a str,
+    pub(crate) session_dir: &'a Path,
+    pub(crate) tracked_paths: &'a [PathBuf],
+}
+
+impl RollbackRuntimeState {
+    /// View of the rollback session that audit can co-write into.
+    pub(crate) fn as_sharing(&self) -> RollbackSharing<'_> {
+        RollbackSharing {
+            session_id: &self.session_id,
+            session_dir: &self.session_dir,
+            tracked_paths: &self.tracked_paths,
+        }
+    }
+}
+
+/// Create the audit state for a supervised session.
+///
+/// - When audit is disabled (`--no-audit`), returns `None`.
+/// - When rollback is active (`sharing` is `Some`), shares the rollback
+///   session ID and directory so both records live in a single `session.json`.
+/// - Otherwise creates a fresh directory under `~/.nono/audit/` that holds
+///   only audit metadata and populates `tracked_paths` from `caps`.
 pub(crate) fn create_audit_state(
     audit_disabled: bool,
-    rollback_destination: Option<&PathBuf>,
+    sharing: Option<RollbackSharing<'_>>,
+    caps: &CapabilitySet,
 ) -> Result<Option<AuditState>> {
     if audit_disabled {
         return Ok(None);
     }
 
-    let (session_id, session_dir) = ensure_session_dir(rollback_destination)?;
+    if let Some(share) = sharing {
+        return Ok(Some(AuditState {
+            session_id: share.session_id.to_string(),
+            session_dir: share.session_dir.to_path_buf(),
+            tracked_paths: share.tracked_paths.to_vec(),
+        }));
+    }
 
+    let (session_id, session_dir) = ensure_audit_session_dir()?;
     Ok(Some(AuditState {
         session_id,
         session_dir,
+        tracked_paths: user_tracked_paths(caps),
     }))
 }
 
@@ -206,22 +286,11 @@ pub(crate) fn warn_if_rollback_flags_ignored(rollback: &RollbackLaunchOptions, s
 pub(crate) fn initialize_rollback_state(
     rollback: &RollbackLaunchOptions,
     caps: &CapabilitySet,
-    audit_state: Option<&AuditState>,
     silent: bool,
 ) -> Result<Option<RollbackRuntimeState>> {
     if !rollback.requested || rollback.disabled {
         return Ok(None);
     }
-
-    enforce_rollback_limits(silent);
-
-    // When audit is active, share its session directory. Otherwise create
-    // a standalone directory so rollback snapshots still have somewhere to
-    // live (handles the --rollback --no-audit case).
-    let (session_id, session_dir) = match audit_state {
-        Some(state) => (state.session_id.clone(), state.session_dir.clone()),
-        None => ensure_session_dir(rollback.destination.as_ref())?,
-    };
 
     let tracked_paths: Vec<PathBuf> = caps
         .fs_capabilities()
@@ -237,6 +306,13 @@ pub(crate) fn initialize_rollback_state(
     if tracked_paths.is_empty() {
         return Ok(None);
     }
+
+    enforce_rollback_limits(silent);
+
+    // Rollback owns its own session directory under `~/.nono/rollbacks/` (or
+    // a user-provided destination); audit will share it via `create_audit_state`
+    // when both are active.
+    let (session_id, session_dir) = ensure_rollback_session_dir(rollback.destination.as_ref())?;
 
     let mut patterns = if rollback.track_all {
         rollback_vcs_exclusions()
@@ -313,6 +389,7 @@ pub(crate) fn initialize_rollback_state(
         tracked_paths,
         atomic_temp_before,
         session_id,
+        session_dir,
     }))
 }
 
@@ -342,6 +419,7 @@ pub(crate) fn finalize_supervised_exit(ctx: RollbackExitContext<'_>) -> Result<(
         tracked_paths,
         atomic_temp_before,
         session_id: rb_session_id,
+        session_dir: _,
     }) = rollback_state
     {
         let (final_manifest, changes) = manager.create_incremental(&baseline)?;
@@ -374,6 +452,8 @@ pub(crate) fn finalize_supervised_exit(ctx: RollbackExitContext<'_>) -> Result<(
 
     // Audit-only path: no rollback snapshots, just persist session metadata
     // with network events. This is the default for supervised sessions.
+    // `tracked_paths` is populated from the user-granted capabilities so that
+    // `nono audit list` can still group and filter audit-only sessions.
     if !audit_saved {
         if let Some(audit_state) = audit_state {
             let meta = nono::undo::SessionMetadata {
@@ -381,7 +461,7 @@ pub(crate) fn finalize_supervised_exit(ctx: RollbackExitContext<'_>) -> Result<(
                 started: started.to_string(),
                 ended: Some(ended.to_string()),
                 command: command.to_vec(),
-                tracked_paths: Vec::new(),
+                tracked_paths: audit_state.tracked_paths.clone(),
                 snapshot_count: 0,
                 exit_code: Some(exit_code),
                 merkle_roots: Vec::new(),
@@ -401,41 +481,35 @@ mod tests {
 
     #[test]
     fn create_audit_state_returns_none_when_disabled() {
-        let result = create_audit_state(true, None).unwrap();
+        let caps = CapabilitySet::new();
+        let result = create_audit_state(true, None, &caps).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
-    fn create_audit_state_creates_session_when_enabled() {
+    fn create_audit_state_shares_rollback_session_when_active() {
+        let caps = CapabilitySet::new();
         let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().to_path_buf();
+        let shared_dir = tmp.path().to_path_buf();
+        let tracked = vec![PathBuf::from("/tmp/project")];
+        let sharing = RollbackSharing {
+            session_id: "shared-123",
+            session_dir: &shared_dir,
+            tracked_paths: &tracked,
+        };
 
-        let state = create_audit_state(false, Some(&dest)).unwrap().unwrap();
+        let state = create_audit_state(false, Some(sharing), &caps)
+            .unwrap()
+            .unwrap();
 
-        assert!(!state.session_id.is_empty());
-        assert!(state.session_dir.exists());
-        assert!(state.session_dir.starts_with(tmp.path()));
+        assert_eq!(state.session_id, "shared-123");
+        assert_eq!(state.session_dir, shared_dir);
+        assert_eq!(state.tracked_paths, tracked);
     }
 
     #[test]
-    fn ensure_session_dir_creates_dir_in_custom_destination() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().to_path_buf();
-
-        let (session_id, session_dir) = ensure_session_dir(Some(&dest)).unwrap();
-
-        assert!(!session_id.is_empty());
-        assert!(session_dir.exists());
-        assert!(session_dir.starts_with(tmp.path()));
-    }
-
-    #[test]
-    fn ensure_session_dir_id_contains_pid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().to_path_buf();
-
-        let (session_id, _) = ensure_session_dir(Some(&dest)).unwrap();
-
+    fn generate_session_id_contains_pid() {
+        let session_id = generate_session_id();
         let pid = std::process::id().to_string();
         assert!(
             session_id.contains(&pid),
@@ -443,15 +517,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn generate_session_id_uses_utc_date_prefix() {
+        // ID format is `YYYYMMDD-HHMMSS-<pid>`. Verify the timestamp portion
+        // matches the current UTC date — catches accidental switches back to
+        // Local time (the original reviewer concern).
+        let session_id = generate_session_id();
+        let utc_prefix = chrono::Utc::now().format("%Y%m%d").to_string();
+        assert!(
+            session_id.starts_with(&utc_prefix),
+            "session_id '{session_id}' should start with UTC date '{utc_prefix}'"
+        );
+    }
+
+    #[test]
+    fn create_session_dir_makes_dir_under_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_dir = create_session_dir(tmp.path(), "my-session").unwrap();
+
+        assert!(session_dir.exists());
+        assert!(session_dir.starts_with(tmp.path()));
+        assert!(session_dir.ends_with("my-session"));
+    }
+
     #[cfg(unix)]
     #[test]
-    fn ensure_session_dir_sets_0700_permissions() {
+    fn create_session_dir_sets_0700_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().to_path_buf();
-
-        let (_, session_dir) = ensure_session_dir(Some(&dest)).unwrap();
+        let session_dir = create_session_dir(tmp.path(), "perms-test").unwrap();
 
         let mode = std::fs::metadata(&session_dir)
             .unwrap()
@@ -459,5 +554,23 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "session dir should have 0700 permissions");
+    }
+
+    #[test]
+    fn ensure_rollback_session_dir_honours_custom_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().to_path_buf();
+
+        let (session_id, session_dir) = ensure_rollback_session_dir(Some(&dest)).unwrap();
+
+        assert!(!session_id.is_empty());
+        assert!(session_dir.exists());
+        assert!(session_dir.starts_with(tmp.path()));
+    }
+
+    #[test]
+    fn user_tracked_paths_returns_empty_for_default_caps() {
+        let caps = CapabilitySet::new();
+        assert!(user_tracked_paths(&caps).is_empty());
     }
 }

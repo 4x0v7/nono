@@ -9,7 +9,8 @@ use crate::cli::{
 use crate::config::user::load_user_config;
 use crate::rollback_base_exclusions;
 use crate::rollback_session::{
-    discover_sessions, format_bytes, load_session, remove_session, rollback_root, SessionInfo,
+    discover_rollback_sessions, format_bytes, load_rollback_session, remove_session, rollback_root,
+    SessionInfo,
 };
 use crate::theme;
 use colored::Colorize;
@@ -76,7 +77,7 @@ pub fn run_rollback(args: RollbackArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_list(args: RollbackListArgs) -> Result<()> {
-    let mut sessions = discover_sessions()?;
+    let mut sessions = discover_rollback_sessions()?;
 
     // Filter by --path if provided.
     // Tracked paths are stored canonical (from FsCapability::resolved), so we
@@ -283,7 +284,7 @@ fn print_sessions_json(sessions: &[&SessionInfo]) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_show(args: RollbackShowArgs) -> Result<()> {
-    let session = load_session(&args.session_id)?;
+    let session = load_rollback_session(&args.session_id)?;
 
     if args.json {
         return print_show_json(&session);
@@ -611,7 +612,7 @@ fn print_show_json(session: &SessionInfo) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_restore(args: RollbackRestoreArgs) -> Result<()> {
-    let session = load_session(&args.session_id)?;
+    let session = load_rollback_session(&args.session_id)?;
 
     // Default to the last snapshot (final state), not baseline
     let snapshot = args
@@ -691,7 +692,7 @@ fn cmd_restore(args: RollbackRestoreArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_verify(args: RollbackVerifyArgs) -> Result<()> {
-    let session = load_session(&args.session_id)?;
+    let session = load_rollback_session(&args.session_id)?;
     let object_store = ObjectStore::new(session.dir.clone())?;
 
     eprintln!(
@@ -798,7 +799,7 @@ fn cmd_cleanup(args: RollbackCleanupArgs) -> Result<()> {
         return cleanup_all(args.dry_run);
     }
 
-    let sessions = discover_sessions()?;
+    let sessions = discover_rollback_sessions()?;
     if sessions.is_empty() {
         eprintln!("{} No rollback sessions to clean up.", prefix());
         return Ok(());
@@ -921,7 +922,7 @@ fn cleanup_all(dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let sessions = discover_sessions()?;
+    let sessions = discover_rollback_sessions()?;
     let alive_count = sessions.iter().filter(|s| s.is_alive).count();
 
     if alive_count > 0 {
@@ -1327,6 +1328,7 @@ mod tests {
             disk_size: 0,
             is_alive: false,
             is_stale: false,
+            kind: crate::rollback_session::SessionKind::Rollback,
         };
 
         let sessions_with_changes = vec![(&session, (1usize, 2usize, 0usize))];
@@ -1369,6 +1371,7 @@ mod tests {
             disk_size: 0,
             is_alive: false,
             is_stale: false,
+            kind: crate::rollback_session::SessionKind::Rollback,
         };
         let s2 = SessionInfo {
             metadata: meta2,
@@ -1376,6 +1379,7 @@ mod tests {
             disk_size: 0,
             is_alive: false,
             is_stale: false,
+            kind: crate::rollback_session::SessionKind::Rollback,
         };
 
         let sessions_with_changes = vec![

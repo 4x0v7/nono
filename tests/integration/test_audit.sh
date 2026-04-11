@@ -21,16 +21,19 @@ fi
 TMPDIR=$(setup_test_dir)
 trap 'cleanup_test_dir "$TMPDIR"' EXIT
 
-# Use the real rollback root (same as nono uses via dirs::home_dir)
+# Audit-only sessions live in ~/.nono/audit/ and rollback sessions live in
+# ~/.nono/rollbacks/. Tests search both so they can detect whichever was
+# created by the scenario under test.
 ROLLBACK_ROOT="$HOME/.nono/rollbacks"
-mkdir -p "$ROLLBACK_ROOT"
+AUDIT_ROOT="$HOME/.nono/audit"
+mkdir -p "$ROLLBACK_ROOT" "$AUDIT_ROOT"
 
 # Helper: find the session.json for a specific nono PID.
 # Session dirs are named YYYYMMDD-HHMMSS-PID so we can grep for the PID suffix.
 find_session_for_pid() {
     local pid="$1"
     local match=""
-    match=$(grep -rl "\"session_id\": \"[^\"]*-${pid}\"" "$ROLLBACK_ROOT" --include='session.json' 2>/dev/null | head -1) || true
+    match=$(grep -rl "\"session_id\": \"[^\"]*-${pid}\"" "$ROLLBACK_ROOT" "$AUDIT_ROOT" --include='session.json' 2>/dev/null | head -1) || true
     echo "$match"
 }
 
@@ -46,6 +49,7 @@ run_nono() {
 echo ""
 echo "Test directory: $TMPDIR"
 echo "Rollback root: $ROLLBACK_ROOT"
+echo "Audit root:    $AUDIT_ROOT"
 echo ""
 
 # =============================================================================
@@ -231,13 +235,71 @@ else
 fi
 
 # =============================================================================
+# Directory isolation: audit-only goes to audit/, rollback goes to rollbacks/
+# =============================================================================
+
+echo ""
+echo "--- Audit / Rollback Directory Isolation ---"
+
+# Test: plain audit-only session must land in ~/.nono/audit/, not ~/.nono/rollbacks/
+TESTS_RUN=$((TESTS_RUN + 1))
+run_nono run --silent --allow-cwd --allow "$TMPDIR" -- echo "audit dir isolation"
+audit_session=$(grep -rl "\"session_id\": \"[^\"]*-${LAST_NONO_PID}\"" "$AUDIT_ROOT" --include='session.json' 2>/dev/null | head -1) || true
+rollback_leak=$(grep -rl "\"session_id\": \"[^\"]*-${LAST_NONO_PID}\"" "$ROLLBACK_ROOT" --include='session.json' 2>/dev/null | head -1) || true
+if [[ -n "$audit_session" && -z "$rollback_leak" ]]; then
+    echo -e "  ${GREEN}PASS${NC}: audit-only session written to audit/, not rollbacks/"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo -e "  ${RED}FAIL${NC}: audit-only session directory placement"
+    echo "       audit dir match:    ${audit_session:-none}"
+    echo "       rollback dir leak:  ${rollback_leak:-none}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# Test: audit-only metadata must include tracked_paths so `nono audit list`
+# grouping and `--path` filtering work.
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ -n "$audit_session" ]] && grep -q '"tracked_paths": \[' "$audit_session"; then
+    # Expect at least one non-empty tracked path entry (string starts with "/")
+    if grep -A10 '"tracked_paths"' "$audit_session" | grep -q '"/'; then
+        echo -e "  ${GREEN}PASS${NC}: audit-only session has non-empty tracked_paths"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        echo -e "  ${RED}FAIL${NC}: audit-only session tracked_paths is empty"
+        echo "       tracked_paths block:"
+        grep -A10 '"tracked_paths"' "$audit_session" | head -15
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+else
+    echo -e "  ${RED}FAIL${NC}: audit-only session.json missing tracked_paths"
+    echo "       audit_session: ${audit_session:-not found}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# Test: rollback session must still land in ~/.nono/rollbacks/
+TESTS_RUN=$((TESTS_RUN + 1))
+WRITE_DIR2=$(mktemp -d "$TMPDIR/write-iso-XXXXXX")
+run_nono run --silent --rollback --no-rollback-prompt --allow-cwd --allow "$WRITE_DIR2" -- touch "$WRITE_DIR2/iso"
+rollback_session=$(grep -rl "\"session_id\": \"[^\"]*-${LAST_NONO_PID}\"" "$ROLLBACK_ROOT" --include='session.json' 2>/dev/null | head -1) || true
+audit_leak=$(grep -rl "\"session_id\": \"[^\"]*-${LAST_NONO_PID}\"" "$AUDIT_ROOT" --include='session.json' 2>/dev/null | head -1) || true
+if [[ -n "$rollback_session" && -z "$audit_leak" ]]; then
+    echo -e "  ${GREEN}PASS${NC}: rollback session written to rollbacks/, not audit/"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo -e "  ${RED}FAIL${NC}: rollback session directory placement"
+    echo "       rollback dir match: ${rollback_session:-none}"
+    echo "       audit dir leak:     ${audit_leak:-none}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# =============================================================================
 # nono audit list
 # =============================================================================
 
 echo ""
 echo "--- Audit List Command ---"
 
-# Test 10: nono audit list shows sessions
+# Test: nono audit list shows sessions
 TESTS_RUN=$((TESTS_RUN + 1))
 set +e
 list_output=$("$NONO_BIN" audit list 2>&1)
@@ -250,6 +312,24 @@ else
     echo -e "  ${RED}FAIL${NC}: audit list shows sessions"
     echo "       Exit: $list_exit"
     echo "       Output: ${list_output:0:500}"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
+# Test: audit list shows both audit-only and rollback kinds
+TESTS_RUN=$((TESTS_RUN + 1))
+set +e
+list_json=$("$NONO_BIN" audit list --json 2>&1)
+list_json_exit=$?
+set -e
+if [[ "$list_json_exit" -eq 0 ]] \
+    && echo "$list_json" | grep -q '"kind": "audit-only"' \
+    && echo "$list_json" | grep -q '"kind": "rollback"'; then
+    echo -e "  ${GREEN}PASS${NC}: audit list --json reports both audit-only and rollback kinds"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo -e "  ${RED}FAIL${NC}: audit list --json should report both kinds"
+    echo "       Exit: $list_json_exit"
+    echo "       Output: ${list_json:0:500}"
     TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 

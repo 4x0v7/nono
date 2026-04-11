@@ -34,7 +34,14 @@ pub struct SessionRecord {
     pub profile: Option<String>,
     pub workdir: PathBuf,
     pub network: String,
+    /// Rollback session ID (under `~/.nono/rollbacks/`). Only populated when
+    /// rollback snapshots were actually taken.
     pub rollback_session: Option<String>,
+    /// Audit session ID. Populated whenever audit metadata was written,
+    /// including audit-only sessions that live under `~/.nono/audit/`.
+    /// When rollback is active, this matches `rollback_session`.
+    #[serde(default)]
+    pub audit_session: Option<String>,
 }
 
 /// Session lifecycle status.
@@ -787,6 +794,7 @@ mod tests {
             workdir: PathBuf::from("/home/user/project"),
             network: "allowed".to_string(),
             rollback_session: None,
+            audit_session: None,
         };
 
         let json = serde_json::to_string(&record).expect("serialize");
@@ -827,6 +835,7 @@ mod tests {
             workdir: PathBuf::from("/tmp"),
             network: "blocked".to_string(),
             rollback_session: None,
+            audit_session: None,
         };
 
         write_session_file(&path, &record).expect("write");
@@ -858,6 +867,7 @@ mod tests {
             workdir: PathBuf::from("/tmp"),
             network: "allowed".to_string(),
             rollback_session: None,
+            audit_session: None,
         };
 
         write_session_file(&path, &record).expect("write");
@@ -905,6 +915,7 @@ mod tests {
             workdir: PathBuf::from("/tmp"),
             network: "allowed".to_string(),
             rollback_session: None,
+            audit_session: None,
         };
 
         let file_path = path.join("guard1.json");
@@ -981,6 +992,7 @@ mod tests {
             workdir: PathBuf::from("/tmp"),
             network: "allowed".to_string(),
             rollback_session: None,
+            audit_session: None,
         };
 
         write_session_file(&sessions_path.join("aabbcc.json"), &record).expect("write");

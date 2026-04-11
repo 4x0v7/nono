@@ -3,7 +3,7 @@ use crate::launch_runtime::{
 };
 use crate::rollback_runtime::{
     create_audit_state, finalize_supervised_exit, initialize_rollback_state,
-    warn_if_rollback_flags_ignored, AuditState, RollbackExitContext,
+    warn_if_rollback_flags_ignored, AuditState, RollbackExitContext, RollbackRuntimeState,
 };
 use crate::{
     exec_strategy, output, protected_paths, pty_proxy, session, terminal_approval, trust_intercept,
@@ -77,6 +77,7 @@ fn create_session_runtime_state(
     caps: &CapabilitySet,
     session: &SessionLaunchOptions,
     audit_state: Option<&AuditState>,
+    rollback_state: Option<&RollbackRuntimeState>,
 ) -> Result<SessionRuntimeState> {
     let started = chrono::Local::now().to_rfc3339();
     let short_session_id = std::env::var(DETACHED_SESSION_ID_ENV)
@@ -110,7 +111,13 @@ fn create_session_runtime_state(
             nono::NetworkMode::AllowAll => "allowed".to_string(),
             nono::NetworkMode::ProxyOnly { port, .. } => format!("proxy (localhost:{port})"),
         },
-        rollback_session: audit_state.map(|state| state.session_id.clone()),
+        // Only populated when rollback snapshots were actually taken — a
+        // plain audited run should not advertise a rollback session it
+        // cannot restore.
+        rollback_session: rollback_state.map(|state| state.session_id.clone()),
+        // Populated whenever audit metadata is being written, including
+        // audit-only sessions that live under `~/.nono/audit/`.
+        audit_session: audit_state.map(|state| state.session_id.clone()),
     };
     let session_guard = Some(session::SessionGuard::new(session_record)?);
     let pty_pair = if session.detached_start {
@@ -142,9 +149,19 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
 
     output::print_applying_sandbox(silent);
 
-    let audit_state = create_audit_state(rollback.audit_disabled, rollback.destination.as_ref())?;
     warn_if_rollback_flags_ignored(rollback, silent);
-    let rollback_state = initialize_rollback_state(rollback, caps, audit_state.as_ref(), silent)?;
+    // Initialize rollback first so that its session directory (under
+    // `~/.nono/rollbacks/`) is established before audit decides where to
+    // record metadata. When rollback is inactive, audit falls back to a
+    // dedicated `~/.nono/audit/` directory.
+    let rollback_state = initialize_rollback_state(rollback, caps, silent)?;
+    let audit_state = create_audit_state(
+        rollback.audit_disabled,
+        rollback_state
+            .as_ref()
+            .map(RollbackRuntimeState::as_sharing),
+        caps,
+    )?;
 
     let protected_roots = protected_paths::ProtectedRoots::from_defaults()?;
     let approval_backend = terminal_approval::TerminalApproval;
@@ -171,8 +188,13 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
     };
 
     let trust_interceptor = create_trust_interceptor(trust);
-    let session_runtime =
-        create_session_runtime_state(command, caps, session, audit_state.as_ref())?;
+    let session_runtime = create_session_runtime_state(
+        command,
+        caps,
+        session,
+        audit_state.as_ref(),
+        rollback_state.as_ref(),
+    )?;
     let SessionRuntimeState {
         started,
         short_session_id,
