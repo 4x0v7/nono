@@ -62,22 +62,24 @@ pub fn run_ps(args: &PsArgs) -> Result<()> {
     for session in &filtered {
         let name = session.name.as_deref().unwrap_or("-");
         let status = match session.status {
-            SessionStatus::Running => "running".green().to_string(),
-            SessionStatus::Paused => "paused".yellow().to_string(),
+            SessionStatus::Running => format!("{:<10}", "running").green().to_string(),
+            SessionStatus::Paused => format!("{:<10}", "paused").yellow().to_string(),
             SessionStatus::Exited => {
                 let code = session.exit_code.unwrap_or(-1);
                 if code == 0 {
-                    "exited(0)".to_string()
+                    format!("{:<10}", "exited(0)")
                 } else {
-                    format!("exited({})", code).red().to_string()
+                    format!("{:<10}", format!("exited({})", code))
+                        .red()
+                        .to_string()
                 }
             }
         };
         let attach = match session.status {
-            SessionStatus::Exited => "-".to_string(),
+            SessionStatus::Exited => format!("{:<10}", "-"),
             _ => match session.attachment {
-                SessionAttachment::Attached => "attached".green().to_string(),
-                SessionAttachment::Detached => "detached".yellow().to_string(),
+                SessionAttachment::Attached => format!("{:<10}", "attached").green().to_string(),
+                SessionAttachment::Detached => format!("{:<10}", "detached").yellow().to_string(),
             },
         };
         let pid = session.child_pid;
@@ -86,7 +88,7 @@ pub fn run_ps(args: &PsArgs) -> Result<()> {
         let command = truncate_command(&session.command, 40);
 
         println!(
-            "{:<16} {:<12} {:<10} {:<10} {:<8} {:<10} {:<14} {}",
+            "{:<16} {:<12} {} {} {:<8} {:<10} {:<14} {}",
             session.session_id, name, status, attach, pid, uptime, profile, command
         );
     }
