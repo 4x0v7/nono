@@ -72,6 +72,13 @@ echo ""
 
 if has_render_nodes; then
     RENDER_NODE=$(ls /dev/dri/renderD* 2>/dev/null | head -1)
+
+    # Check if the user can actually open the render node (requires 'render' group).
+    # If not, skip these tests — the failure would be Unix permissions, not sandbox.
+    if ! python3 -c "import os; fd = os.open('${RENDER_NODE}', os.O_RDWR); os.close(fd)" 2>/dev/null; then
+        skip_test "DRM render node tests" "no permission on ${RENDER_NODE} (user not in 'render' group?)"
+    else
+
     echo "--- DRM Render Node Tests (${RENDER_NODE}) ---"
 
     # Without --allow-gpu: opening a render node should fail with permission denied
@@ -122,6 +129,7 @@ except OSError as e:
 finally:
     os.close(fd)
 "
+    fi # end of render group permission check
 else
     skip_test "render node tests" "no /dev/dri/renderD* found"
 fi
