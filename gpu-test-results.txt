@@ -1,0 +1,107 @@
+
+[0;34m=== GPU Access Tests ===[0m
+
+Detected GPU devices:
+crw-rw---- 1 root render 226, 128 Mar 29 17:19 /dev/dri/renderD128
+crw-rw-rw- 1 root root 195, 254 Jan 30 17:11 /dev/nvidia-modeset
+crw-rw-rw- 1 root root 236, 255 Jan 30 17:11 /dev/nvidia-nvswitchctl
+crw-rw-rw- 1 root root 235,   0 Jan 30 17:11 /dev/nvidia-uvm
+crw-rw-rw- 1 root root 235,   1 Jan 30 17:11 /dev/nvidia-uvm-tools
+crw-rw-rw- 1 root root 195,   0 Jan 30 17:11 /dev/nvidia0
+crw-rw-rw- 1 root root 195, 255 Jan 30 17:11 /dev/nvidiactl
+
+/dev/nvidia-caps:
+total 0
+drwxr-xr-x  2 root root     80 Jan 30 17:11 .
+drwxr-xr-x 18 root root   4180 Mar 29 17:19 ..
+cr--------  1 root root 238, 1 Jan 30 17:11 nvidia-cap1
+cr--r--r--  1 root root 238, 2 Jan 30 17:11 nvidia-cap2
+
+--- DRM Render Node Tests (/dev/dri/renderD128) ---
+  [0;32mPASS[0m: render node denied without --allow-gpu (exit 1)
+  [0;31mFAIL[0m: render node allowed with --allow-gpu
+       Expected exit code: 0, got: 1
+       Command: ./target/release/nono run --silent --allow /tmp/tmp.ye32jdwbPE --allow-gpu -- python3 -c 
+import os, sys
+fd = os.open('/dev/dri/renderD128', os.O_RDWR)
+os.close(fd)
+print('OK: opened render node successfully')
+
+       Output: nono: CWD access requires --allow-cwd in silent mode
+  [0;31mFAIL[0m: render node ioctl works with --allow-gpu
+       Expected exit code: 0, got: 1
+       Command: ./target/release/nono run --silent --allow /tmp/tmp.ye32jdwbPE --allow-gpu -- python3 -c 
+import os, sys, fcntl, struct
+fd = os.open('/dev/dri/renderD128', os.O_RDWR)
+# DRM_IOCTL_VERSION = 0xc0406400 on 64-bit Linux
+# This is a safe read-only ioctl that returns driver version info
+try:
+    # Try DRM version ioctl - may fail on some drivers but open+ioctl proves access
+    buf = bytearray(4 * 5 + 3 * 8)  # drm_version struct (padded)
+    fcntl.ioctl(fd, 0xc0406400, buf, True)
+    print('OK: DRM_IOCTL_VERSION succeeded')
+except OSError as e:
+    # ENOTTY/EINVAL is ok - means ioctl reached the driver but format was wrong
+    # The point is it wasn't EACCES (sandbox didn't block it)
+    if e.errno in (25, 22):  # ENOTTY, EINVAL
+        print(f'OK: ioctl reached driver (errno={e.errno}, expected for raw call)')
+    else:
+        print(f'ERROR: unexpected ioctl error: {e}', file=sys.stderr)
+        sys.exit(1)
+finally:
+    os.close(fd)
+
+       Output: nono: CWD access requires --allow-cwd in silent mode
+
+--- NVIDIA Device Tests ---
+Found 1 NVIDIA GPU device(s)
+  [0;32mPASS[0m: nvidia0 denied without --allow-gpu (exit 1)
+  [0;32mPASS[0m: nvidiactl denied without --allow-gpu (exit 1)
+  [0;31mFAIL[0m: all NVIDIA devices accessible with --allow-gpu
+       Expected exit code: 0, got: 1
+       Command: ./target/release/nono run --silent --allow /tmp/tmp.ye32jdwbPE --allow-gpu -- python3 -c 
+import os, sys, glob
+devices = glob.glob('/dev/nvidia[0-9]*') + ['/dev/nvidiactl']
+if os.path.exists('/dev/nvidia-uvm'):
+    devices.append('/dev/nvidia-uvm')
+opened = 0
+for dev in devices:
+    try:
+        fd = os.open(dev, os.O_RDWR)
+        os.close(fd)
+        opened += 1
+    except Exception as e:
+        print(f'WARN: could not open {dev}: {e}', file=sys.stderr)
+print(f'OK: opened {opened}/{len(devices)} NVIDIA devices')
+if opened == 0:
+    sys.exit(1)
+
+       Output: nono: CWD access requires --allow-cwd in silent mode
+  [0;33mSKIP[0m: multi-GPU access (only 1 NVIDIA GPU present)
+  [0;31mFAIL[0m: nvidia-caps accessible with --allow-gpu
+       Expected exit code: 0, got: 1
+       Command: ./target/release/nono run --silent --allow /tmp/tmp.ye32jdwbPE --allow-gpu -- python3 -c 
+import os, sys, glob
+caps = glob.glob('/dev/nvidia-caps/*')
+for cap in caps:
+    fd = os.open(cap, os.O_RDWR)
+    os.close(fd)
+print(f'OK: opened {len(caps)} nvidia-caps devices')
+
+       Output: nono: CWD access requires --allow-cwd in silent mode
+  [0;33mSKIP[0m: AMD KFD tests (no /dev/kfd found)
+
+--- Read-only GPU Path Tests ---
+  [0;33mSKIP[0m: /usr/share/vulkan readable (directory does not exist)
+  [0;33mSKIP[0m: /etc/vulkan readable (directory does not exist)
+  [0;31mFAIL[0m: /sys/class/drm readable with --allow-gpu
+       Expected exit code: 0, got: 1
+       Command: ./target/release/nono run --silent --allow /tmp/tmp.ye32jdwbPE --allow-gpu -- ls /sys/class/drm
+       Output: nono: CWD access requires --allow-cwd in silent mode
+
+  --------------------------------
+  Tests run:     8
+  Passed:        [0;32m3[0m
+  Failed:        [0;31m5[0m
+  Skipped:       [0;33m4[0m
+  --------------------------------

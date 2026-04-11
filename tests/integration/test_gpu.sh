@@ -76,7 +76,7 @@ if has_render_nodes; then
 
     # Without --allow-gpu: opening a render node should fail with permission denied
     expect_failure "render node denied without --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" -- \
         python3 -c "
 import os, sys, errno
 try:
@@ -90,7 +90,7 @@ except PermissionError:
 
     # With --allow-gpu: opening a render node should succeed
     expect_success "render node allowed with --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
         python3 -c "
 import os, sys
 fd = os.open('${RENDER_NODE}', os.O_RDWR)
@@ -100,7 +100,7 @@ print('OK: opened render node successfully')
 
     # With --allow-gpu: verify we can actually ioctl the device (not just open it)
     expect_success "render node ioctl works with --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
         python3 -c "
 import os, sys, fcntl, struct
 fd = os.open('${RENDER_NODE}', os.O_RDWR)
@@ -140,7 +140,7 @@ if has_nvidia_devices; then
 
     # Without --allow-gpu: opening nvidia0 should fail
     expect_failure "nvidia0 denied without --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" -- \
         python3 -c "
 import os, sys
 try:
@@ -153,7 +153,7 @@ except PermissionError:
 
     # Without --allow-gpu: nvidiactl should also be denied
     expect_failure "nvidiactl denied without --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" -- \
         python3 -c "
 import os, sys
 try:
@@ -166,7 +166,7 @@ except PermissionError:
 
     # With --allow-gpu: should be able to open all NVIDIA devices
     expect_success "all NVIDIA devices accessible with --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
         python3 -c "
 import os, sys, glob
 devices = glob.glob('/dev/nvidia[0-9]*') + ['/dev/nvidiactl']
@@ -188,7 +188,7 @@ if opened == 0:
     # Multi-GPU: verify all GPU devices are accessible (not just nvidia0)
     if [[ "$NVIDIA_COUNT" -gt 1 ]]; then
         expect_success "multi-GPU: all nvidia[0-N] devices accessible" \
-            "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+            "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
             python3 -c "
 import os, sys, glob
 gpu_devs = sorted(glob.glob('/dev/nvidia[0-9]*'))
@@ -204,7 +204,7 @@ print(f'OK: opened all {len(gpu_devs)} GPU devices: {gpu_devs}')
     # NVIDIA MIG: test nvidia-caps if present
     if [[ -d /dev/nvidia-caps ]]; then
         expect_success "nvidia-caps accessible with --allow-gpu" \
-            "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+            "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
             python3 -c "
 import os, sys, glob
 caps = glob.glob('/dev/nvidia-caps/*')
@@ -229,7 +229,7 @@ if has_kfd_device; then
     echo "--- AMD KFD Tests ---"
 
     expect_failure "kfd denied without --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" -- \
         python3 -c "
 import os, sys
 try:
@@ -241,7 +241,7 @@ except PermissionError:
 "
 
     expect_success "kfd allowed with --allow-gpu" \
-        "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+        "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
         python3 -c "
 import os, sys
 fd = os.open('/dev/kfd', os.O_RDWR)
@@ -262,7 +262,7 @@ echo "--- Read-only GPU Path Tests ---"
 for dir in /usr/share/vulkan /etc/vulkan /sys/class/drm; do
     if [[ -d "$dir" ]]; then
         expect_success "${dir} readable with --allow-gpu" \
-            "$NONO_BIN" run --silent --allow "$TMPDIR" --allow-gpu -- \
+            "$NONO_BIN" run --silent --allow-cwd --allow "$TMPDIR" --allow-gpu -- \
             ls "$dir"
     else
         skip_test "${dir} readable" "directory does not exist"

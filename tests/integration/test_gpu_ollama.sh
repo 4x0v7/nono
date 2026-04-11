@@ -145,7 +145,7 @@ NOGPU_HOST="127.0.0.1:${NOGPU_PORT}"
 # Start ollama inside sandbox WITHOUT GPU access.
 # Grant network (ollama needs to listen), model store (read), and tmpdir.
 OLLAMA_HOST="${NOGPU_HOST}" \
-"$NONO_BIN" run --silent \
+"$NONO_BIN" run --silent --allow-cwd \
     --read "${OLLAMA_MODELS}" \
     --allow "$TMPDIR" \
     --allow-net \
@@ -209,7 +209,7 @@ GPU_HOST="127.0.0.1:${GPU_PORT}"
 
 # Start ollama inside sandbox WITH GPU access
 OLLAMA_HOST="${GPU_HOST}" \
-"$NONO_BIN" run --silent \
+"$NONO_BIN" run --silent --allow-cwd \
     --read "${OLLAMA_MODELS}" \
     --allow "$TMPDIR" \
     --allow-net \
