@@ -202,3 +202,26 @@ jobs:
           download-url: "https://github.com/always-further/nono/archive/refs/tags/${{ env.RELEASE_TAG }}.tar.gz"
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_CORE_TOKEN }}
+
+  notify-downstream:
+    name: Notify Downstream Repos
+    needs: [release, publish-crates]
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, 'alpha') && !contains(github.event.inputs.tag || github.ref_name, 'beta') && !contains(github.event.inputs.tag || github.ref_name, 'rc') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        repo:
+          - always-further/nono-py
+          - always-further/nono-ts
+          - always-further/nono-go
+          - always-further/nono-registry
+          - always-further/nono-docs
+    steps:
+      - name: Dispatch to ${{ matrix.repo }}
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        with:
+          token: ${{ secrets.DOWNSTREAM_PAT }}
+          repository: ${{ matrix.repo }}
+          event-type: nono-release
+          client-payload: '{"nono_version": "${{ env.RELEASE_TAG }}"}'
