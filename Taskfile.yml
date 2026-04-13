@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+tasks:
+  default:
+    desc: Print all tasks
+    cmd: task -a
+
+  # --- VM tasks (Multipass) ---
+
+  vm:create:
+    desc: Create a fresh Ubuntu VM for nono development
+    cmds:
+      - >-
+        multipass launch 25.10
+        --name nono
+        --cpus 8
+        --memory 8G
+        --disk 40G
+      - multipass mount "{{.ROOT_DIR}}" nono:/home/ubuntu/nono
+      - multipass exec nono -- bash /home/ubuntu/nono/scripts/vm-bootstrap.sh
+    status:
+      - multipass info nono
+
+  vm:shell:
+    desc: Shell into the VM
+    cmd: multipass shell nono
+    interactive: true
+
+  vm:stop:
+    desc: Stop the VM
+    cmd: multipass stop nono
+
+  vm:start:
+    desc: Start the VM
+    cmd: multipass start nono
+
+  vm:delete:
+    desc: Delete the VM and purge
+    cmd: multipass delete --purge nono
+
+  vm:new:
+    desc: Delete and recreate the VM
+    cmds:
+      - task: vm:delete
+      - task: vm:create
+
+  vm:info:
+    desc: Show VM status
+    cmd: multipass info nono
+
+  # --- VM build tasks ---
+
+  vm:build:
+    desc: Build nono in the VM (debug)
+    cmd: multipass exec nono -- bash -lc 'cd ~/nono && make build'
+
+  vm:build:release:
+    desc: Build nono in the VM (release)
+    cmd: multipass exec nono -- bash -lc 'cd ~/nono && make build-release-cli'
+
+  vm:test:
+    desc: Run tests in the VM
+    cmd: multipass exec nono -- bash -lc 'cd ~/nono && make test'
+
+  vm:check:
+    desc: Run clippy + fmt check in the VM
+    cmd: multipass exec nono -- bash -lc 'cd ~/nono && make check'
+
+  vm:ci:
+    desc: Run full CI (check + test + audit) in the VM
+    cmd: multipass exec nono -- bash -lc 'cd ~/nono && make ci'
+
+  vm:test:audit:
+    desc: Test audit/rollback decoupling (issue #269)
+    cmd: multipass exec nono -- bash -lc 'cd ~/nono && nu scripts/test-audit-decoupling.nu'
