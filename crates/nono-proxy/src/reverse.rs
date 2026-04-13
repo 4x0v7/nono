@@ -1441,17 +1441,14 @@ mod tests {
 
     #[test]
     fn test_strip_proxy_query_param_with_other_params() {
-        let result =
-            strip_proxy_query_param("/api/v1/pods?token=PHANTOM123&limit=10", "token");
+        let result = strip_proxy_query_param("/api/v1/pods?token=PHANTOM123&limit=10", "token");
         assert_eq!(result, "/api/v1/pods?limit=10");
     }
 
     #[test]
     fn test_strip_proxy_query_param_middle() {
-        let result = strip_proxy_query_param(
-            "/api/v1/pods?limit=10&token=PHANTOM123&watch=true",
-            "token",
-        );
+        let result =
+            strip_proxy_query_param("/api/v1/pods?limit=10&token=PHANTOM123&watch=true", "token");
         assert_eq!(result, "/api/v1/pods?limit=10&watch=true");
     }
 
@@ -1552,15 +1549,9 @@ mod tests {
         assert_eq!(cleaned, "/api/v1/namespaces");
 
         // 3. Upstream transform (header mode = no path change)
-        let transformed = transform_path_for_mode(
-            &InjectMode::Header,
-            &cleaned,
-            None,
-            None,
-            None,
-            &credential,
-        )
-        .unwrap();
+        let transformed =
+            transform_path_for_mode(&InjectMode::Header, &cleaned, None, None, None, &credential)
+                .unwrap();
         assert_eq!(transformed, "/api/v1/namespaces");
     }
 
@@ -1594,15 +1585,9 @@ mod tests {
         assert_eq!(cleaned, "/api/v1/pods?limit=100");
 
         // 3. Upstream transform (header mode = no path change)
-        let transformed = transform_path_for_mode(
-            &InjectMode::Header,
-            &cleaned,
-            None,
-            None,
-            None,
-            &credential,
-        )
-        .unwrap();
+        let transformed =
+            transform_path_for_mode(&InjectMode::Header, &cleaned, None, None, None, &credential)
+                .unwrap();
         assert_eq!(transformed, "/api/v1/pods?limit=100");
     }
 }
