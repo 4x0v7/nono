@@ -448,7 +448,7 @@ async fn handle_connection(mut stream: tokio::net::TcpStream, state: &ProxyState
                         .rsplit_once(':')
                         .map(|(h, p)| (h, p.parse::<u16>().unwrap_or(443)))
                         .unwrap_or((&host_port, 443));
-                    warn!(
+                    debug!(
                         "Blocked CONNECT to route upstream {} — use reverse proxy path instead",
                         authority
                     );
