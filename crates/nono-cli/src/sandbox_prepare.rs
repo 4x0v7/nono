@@ -1057,10 +1057,21 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
         // inside ~/.claude/ (which the sandbox already grants readwrite).
         // This replaces the old symlink-based redirect for ~/.claude.json
         // and also ensures token refresh temp files land in a writable dir.
-        if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
-            #[allow(clippy::disallowed_methods)] // Single-threaded before fork.
-            std::env::set_var("CLAUDE_CONFIG_DIR", home_path.join(".claude"));
-        }
+        let claude_config_dir = match std::env::var_os("CLAUDE_CONFIG_DIR") {
+            Some(dir) => PathBuf::from(dir),
+            None => {
+                let dir = home_path.join(".claude");
+                #[allow(clippy::disallowed_methods)] // Single-threaded before fork.
+                std::env::set_var("CLAUDE_CONFIG_DIR", &dir);
+                dir
+            }
+        };
+
+        // Claude Code creates $CLAUDE_CONFIG_DIR.lock/ for token refresh
+        // locking, then removes it afterwards. The sandbox blocks mkdir in
+        // the parent directory, so pre-create it each time.
+        let lock_dir = claude_config_dir.with_extension("lock");
+        precreate(&lock_dir, true);
 
         precreate(&home_path.join(".cache/claude-cli-nodejs"), true);
     }
