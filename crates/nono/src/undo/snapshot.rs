@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 use super::exclusion::ExclusionFilter;
 use super::merkle::MerkleTree;
 use super::object_store::ObjectStore;
-use super::types::{Change, ChangeType, FileState, SessionMetadata, SnapshotManifest};
+use super::types::{Change, ChangeType, ContentHash, FileState, SessionMetadata, SnapshotManifest};
 
 /// Budget limits for directory walks during snapshot operations.
 ///
@@ -416,6 +416,19 @@ impl SnapshotManager {
             NonoError::Snapshot(format!("Failed to serialize session metadata: {e}"))
         })?;
         atomic_write(&path, json.as_bytes())
+    }
+
+    /// Compute the Merkle root of the current filesystem state without
+    /// storing objects or writing manifests.
+    ///
+    /// Walks all tracked paths, applies the exclusion filter, hashes each
+    /// file, and returns the Merkle root. This is useful for audit-only
+    /// sessions that need a cryptographic commitment to filesystem state
+    /// without the overhead of full snapshot storage.
+    pub fn compute_merkle_root(&self) -> Result<ContentHash> {
+        let files = self.walk_current()?;
+        let merkle = MerkleTree::from_manifest(&files)?;
+        Ok(*merkle.root())
     }
 
     /// Get the number of snapshots taken in this session.
@@ -1068,6 +1081,39 @@ mod tests {
 
         // Merkle roots should differ
         assert_ne!(baseline.merkle_root, incremental.merkle_root);
+    }
+
+    #[test]
+    fn compute_merkle_root_matches_baseline() {
+        let (dir, tracked) = setup_test_dir();
+        let session_dir = dir.path().join("session");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+
+        // compute_merkle_root uses walk_current (no storage), while
+        // create_baseline uses walk_and_store. Both should produce the
+        // same merkle root for the same filesystem state.
+        let manager = make_manager(&session_dir, &tracked);
+        let root_before = manager.compute_merkle_root().expect("compute root");
+
+        let mut manager = make_manager(&session_dir, &tracked);
+        let baseline = manager.create_baseline().expect("baseline");
+
+        assert_eq!(root_before, baseline.merkle_root);
+    }
+
+    #[test]
+    fn compute_merkle_root_changes_after_modification() {
+        let (dir, tracked) = setup_test_dir();
+        let session_dir = dir.path().join("session");
+        fs::create_dir_all(&session_dir).expect("create session dir");
+
+        let manager = make_manager(&session_dir, &tracked);
+        let root_before = manager.compute_merkle_root().expect("compute root before");
+
+        fs::write(tracked.join("file1.txt"), b"changed content").expect("modify");
+
+        let root_after = manager.compute_merkle_root().expect("compute root after");
+        assert_ne!(root_before, root_after);
     }
 
     #[test]

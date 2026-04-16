@@ -2,8 +2,8 @@ use crate::launch_runtime::{
     ProxyLaunchOptions, RollbackLaunchOptions, SessionLaunchOptions, TrustLaunchOptions,
 };
 use crate::rollback_runtime::{
-    create_audit_state, finalize_supervised_exit, initialize_rollback_state,
-    warn_if_rollback_flags_ignored, AuditState, RollbackExitContext,
+    create_audit_state, finalize_supervised_exit, initialize_audit_snapshots,
+    initialize_rollback_state, warn_if_rollback_flags_ignored, AuditState, RollbackExitContext,
 };
 use crate::{
     exec_strategy, output, protected_paths, pty_proxy, session, terminal_approval, trust_intercept,
@@ -163,6 +163,18 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
 
     let rollback_state = initialize_rollback_state(rollback, caps, audit_state.as_ref(), silent)?;
 
+    // When rollback is not active but audit is, compute a pre-execution
+    // merkle root so the audit trail has a cryptographic commitment to
+    // filesystem state.
+    let audit_snapshot_state = if rollback_state.is_none() {
+        match audit_state.as_ref() {
+            Some(state) => initialize_audit_snapshots(caps, state)?,
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let protected_roots = protected_paths::ProtectedRoots::from_defaults()?;
     let approval_backend = terminal_approval::TerminalApproval;
     let supervisor_session_id = build_supervisor_session_id(audit_state.as_ref());
@@ -213,6 +225,7 @@ pub(crate) fn execute_supervised_runtime(ctx: SupervisedRuntimeContext<'_>) -> R
     finalize_supervised_exit(RollbackExitContext {
         audit_state: audit_state.as_ref(),
         rollback_state,
+        audit_snapshot_state,
         proxy_handle,
         started: &started,
         ended: &ended,
