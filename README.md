@@ -35,6 +35,10 @@
 > [!WARNING]
 > Early alpha -- not yet security audited for production use. Active development may cause breakage.
 
+
+> [!NOTE]
+> Claude Code Logins from within the sandbox -  there has been a regression in v0.36.0 impacting claude code logins - which we hope is now fixed in v0.37.0. If however, you're still seeing the issue, please open an issue outlining with your installation method (npm, curl, brew) along with your OS. Thanks for your patience! 
+
 ---
 
 Most sandboxes feel like sandboxes. Rigid, sluggish, and designed for a different problem entirely. nono was built from the ground up for AI agents - and the developer workfows they need to thrive - agent multiplexing, snapshots, credential injection, supply chain security out of the box. Develop alongside nono, then deploy anywhere: CI pipelines, Kubernetes, cloud VMs, microVMs. The one stop shop for all your clankers.
