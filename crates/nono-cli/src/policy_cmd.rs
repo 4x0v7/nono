@@ -690,7 +690,11 @@ fn cmd_show(args: PolicyShowArgs) -> Result<()> {
         println!();
         println!(
             "  {}",
-            theme::fg("Raw Seatbelt rules (unsafe_macos_seatbelt_rules):", t.yellow).bold()
+            theme::fg(
+                "Raw Seatbelt rules (unsafe_macos_seatbelt_rules):",
+                t.yellow
+            )
+            .bold()
         );
         for rule in &profile.unsafe_macos_seatbelt_rules {
             println!("    {}", theme::fg(rule, t.text));
@@ -839,8 +843,7 @@ fn profile_to_json(
     }
 
     if !profile.unsafe_macos_seatbelt_rules.is_empty() {
-        val["unsafe_macos_seatbelt_rules"] =
-            serde_json::json!(profile.unsafe_macos_seatbelt_rules);
+        val["unsafe_macos_seatbelt_rules"] = serde_json::json!(profile.unsafe_macos_seatbelt_rules);
     }
 
     val
