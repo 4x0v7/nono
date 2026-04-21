@@ -4,6 +4,8 @@ use crate::command_blocking_deprecation;
 #[cfg(unix)]
 use crate::config;
 use crate::credential_runtime::load_env_credentials;
+use crate::network_policy;
+use crate::output;
 use crate::profile;
 use crate::profile::WorkdirAccess;
 use crate::profile_runtime::{prepare_profile, prepare_profile_for_preflight};
@@ -969,6 +971,13 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
             .as_ref()
             .map(|network| network.allow_domains.clone())
             .unwrap_or_default();
+        if !silent {
+            for warning in
+                network_policy::collect_allow_domain_port_warnings(&allow_domain, "manifest allow_domain")
+            {
+                output::print_warning(&warning);
+            }
+        }
         let credentials = manifest
             .credentials
             .iter()
@@ -1031,6 +1040,18 @@ pub(crate) fn prepare_sandbox(args: &SandboxArgs, silent: bool) -> Result<Prepar
     if let Some(profile) = loaded_profile.as_ref() {
         let profile_warnings = command_blocking_deprecation::collect_profile_warnings(profile);
         command_blocking_deprecation::print_warnings(&profile_warnings, silent);
+    }
+    if !silent {
+        for warning in
+            network_policy::collect_allow_domain_port_warnings(&profile_allow_domain, "profile allow_domain")
+        {
+            output::print_warning(&warning);
+        }
+        for warning in
+            network_policy::collect_allow_domain_port_warnings(&args.allow_proxy, "--allow-domain")
+        {
+            output::print_warning(&warning);
+        }
     }
 
     #[cfg(unix)]

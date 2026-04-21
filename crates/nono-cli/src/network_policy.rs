@@ -342,8 +342,7 @@ pub fn expand_proxy_allow(policy: &NetworkPolicy, entries: &[String]) -> Vec<Str
             }
         } else {
             // Strip optional :port suffix — the proxy host filter matches
-            // hostnames only, while allow_domain entries may include ports
-            // for Landlock TCP connect rules.
+            // hostnames only, even if user input includes host:port syntax.
             let host = entry
                 .rsplit_once(':')
                 .and_then(|(h, p)| p.parse::<u16>().ok().map(|_| h))
@@ -352,6 +351,22 @@ pub fn expand_proxy_allow(policy: &NetworkPolicy, entries: &[String]) -> Vec<Str
         }
     }
     result
+}
+
+pub fn collect_allow_domain_port_warnings(entries: &[String], source: &str) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .rsplit_once(':')
+                .and_then(|(_host, port)| port.parse::<u16>().ok())
+                .map(|_| {
+                    format!(
+                        "{source} entry '{entry}' includes a :port suffix. nono now ignores ports in allow-domain rules and only applies hostname filtering through the proxy."
+                    )
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1018,5 +1033,31 @@ mod tests {
             "Non-OAuth2 route should not have oauth2 config"
         );
         assert_eq!(routes[0].credential_key, Some("my_key".to_string()));
+    }
+
+    #[test]
+    fn test_collect_allow_domain_port_warnings_detects_host_port_entries() {
+        let warnings = collect_allow_domain_port_warnings(
+            &[
+                "api.example.com".to_string(),
+                "nats.example.com:4222".to_string(),
+                "*.corp.internal:8443".to_string(),
+            ],
+            "allow_domain",
+        );
+
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("nats.example.com:4222"));
+        assert!(warnings[1].contains("*.corp.internal:8443"));
+    }
+
+    #[test]
+    fn test_collect_allow_domain_port_warnings_ignores_plain_hosts_and_groups() {
+        let warnings = collect_allow_domain_port_warnings(
+            &["developer".to_string(), "api.example.com".to_string()],
+            "allow_domain",
+        );
+
+        assert!(warnings.is_empty());
     }
 }
