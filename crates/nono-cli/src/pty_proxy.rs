@@ -1747,9 +1747,9 @@ impl Drop for AttachResizeSignalGuard {
 }
 
 /// Attach to an already connected session socket.
-pub fn attach_to_stream(stream: UnixStream) -> Result<()> {
+pub fn attach_to_stream(stream: UnixStream, session_id: Option<&str>) -> Result<()> {
     let resize_socket = recv_attach_resize_socket(&stream)?;
-    attach_to_stream_with_init(stream, resize_socket, || Ok(()))
+    attach_to_stream_with_init(stream, resize_socket, session_id, || Ok(()))
 }
 
 /// Attach to an already connected session socket after running an init hook.
@@ -1757,9 +1757,13 @@ pub fn attach_to_stream(stream: UnixStream) -> Result<()> {
 /// The init hook runs after the local terminal has entered raw mode but before
 /// the attach loop starts, which is important for TUIs that probe the terminal
 /// immediately when they are resumed.
+///
+/// `session_id`, when provided, is used to print a resume-command hint in the
+/// post-detach notice so the user can reattach without hunting for the id.
 pub fn attach_to_stream_with_init<F>(
     stream: UnixStream,
     resize_socket: Option<UnixDatagram>,
+    session_id: Option<&str>,
     init: F,
 ) -> Result<()>
 where
@@ -1791,8 +1795,11 @@ where
         Err(e) => Err(e),
     };
 
-    // Restore terminal
-    leave_attach_screen();
+    // Restore the terminal: use the clearing variant so residual UI from the
+    // detached session (cursor blocks, partially-drawn lines) is wiped before
+    // control returns to the outer shell, then put termios back into cooked
+    // mode so the subsequent detach notice renders with proper \r\n handling.
+    let _ = write_all_fd(libc::STDOUT_FILENO, terminal_restore_escape(true));
     if let Some(ref termios) = saved_termios {
         let _ = nix::sys::termios::tcsetattr(
             std::io::stdin(),
@@ -1804,7 +1811,37 @@ where
     // Keep stream alive until we're done
     drop(stream);
 
+    if result.is_ok() {
+        print_detach_notice(session_id);
+    }
+
     result
+}
+
+/// Print the post-detach resume hint in dim/faint text on stderr.
+///
+/// Uses ANSI SGR 2 ("faint") so the notice renders as a lighter gray than the
+/// terminal's default foreground, keeping the detach confirmation unobtrusive
+/// while still giving the user the exact command to reattach.
+fn print_detach_notice(session_id: Option<&str>) {
+    use std::io::IsTerminal;
+
+    let stderr = std::io::stderr();
+    let use_color = stderr.is_terminal();
+    let (dim, reset) = if use_color {
+        ("\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "")
+    };
+    match session_id {
+        Some(id) => {
+            eprintln!("{dim}Resume this session with:{reset}");
+            eprintln!("{dim}  nono attach {id}{reset}");
+        }
+        None => {
+            eprintln!("{dim}Detached from session.{reset}");
+        }
+    }
 }
 
 /// Connect to a running session's attach socket and proxy I/O.
@@ -1824,7 +1861,7 @@ pub fn attach_to_session(session_id: &str) -> Result<()> {
         other => other?,
     };
     wait_for_attach_ready(stream.as_raw_fd(), 1000)?;
-    attach_to_stream(stream)
+    attach_to_stream(stream, Some(session_id))
 }
 
 /// Run the attach client I/O loop.
@@ -2009,7 +2046,6 @@ fn run_attach_loop(
         }
     }
 
-    eprintln!("\n[nono] Detached from session.");
     Ok(())
 }
 
