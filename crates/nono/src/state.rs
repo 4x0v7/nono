@@ -2,7 +2,9 @@
 //!
 //! This module provides serialization of capability state for diagnostic purposes.
 
-use crate::capability::{AccessMode, CapabilitySet, FsCapability};
+use crate::capability::{
+    AccessMode, CapabilitySet, FsCapability, UnixSocketCapability, UnixSocketMode,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -11,6 +13,10 @@ use std::path::PathBuf;
 pub struct SandboxState {
     /// Filesystem capabilities
     pub fs: Vec<FsCapState>,
+    /// AF_UNIX socket capabilities (may be absent in states persisted
+    /// by older nono builds; `#[serde(default)]` preserves backward compat).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unix_sockets: Vec<UnixSocketCapState>,
     /// Whether network is blocked
     pub net_blocked: bool,
 }
@@ -28,6 +34,19 @@ pub struct FsCapState {
     pub is_file: bool,
 }
 
+/// Serializable representation of a [`UnixSocketCapability`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnixSocketCapState {
+    /// Original path as specified
+    pub original: PathBuf,
+    /// Resolved canonical path
+    pub resolved: PathBuf,
+    /// Whether the grant is directory-scoped (non-recursive)
+    pub is_directory: bool,
+    /// Mode string: "connect" or "connect+bind"
+    pub mode: String,
+}
+
 impl SandboxState {
     /// Create state from a capability set
     #[must_use]
@@ -41,6 +60,16 @@ impl SandboxState {
                     resolved: cap.resolved.clone(),
                     access: cap.access.to_string(),
                     is_file: cap.is_file,
+                })
+                .collect(),
+            unix_sockets: caps
+                .unix_socket_capabilities()
+                .iter()
+                .map(|cap| UnixSocketCapState {
+                    original: cap.original.clone(),
+                    resolved: cap.resolved.clone(),
+                    is_directory: cap.is_directory,
+                    mode: cap.mode.to_string(),
                 })
                 .collect(),
             net_blocked: caps.is_network_blocked(),
@@ -77,6 +106,45 @@ impl SandboxState {
                 FsCapability::new_dir(&fs_cap.original, access)?
             };
             caps.add_fs(cap);
+        }
+
+        for sock in &self.unix_sockets {
+            let mode = match sock.mode.as_str() {
+                "connect" => UnixSocketMode::Connect,
+                "connect+bind" => UnixSocketMode::ConnectBind,
+                other => {
+                    return Err(crate::error::NonoError::ConfigParse(format!(
+                        "invalid unix socket mode in sandbox state: {other}"
+                    )));
+                }
+            };
+
+            // Reconstruct from the caller-supplied `original` so the
+            // stored alias survives the roundtrip (macOS Seatbelt uses
+            // it for dual-path emission when original != resolved).
+            // Then validate that canonicalisation produced the same
+            // `resolved` as was serialized. The check rejects two
+            // failure modes with one test:
+            //
+            // - Filesystem drift between save and reload (symlink moved,
+            //   ConnectBind pending path now exists, etc.).
+            // - Crafted JSON smuggling: attacker sets an evil `original`
+            //   and legit `resolved`; the reconstructed cap's actual
+            //   resolved won't match the crafted one, so we reject.
+            let cap = if sock.is_directory {
+                UnixSocketCapability::new_dir(&sock.original, mode)?
+            } else {
+                UnixSocketCapability::new_file(&sock.original, mode)?
+            };
+            if cap.resolved != sock.resolved {
+                return Err(crate::error::NonoError::ConfigParse(format!(
+                    "unix socket grant canonical path drifted at state reload: \
+                     serialized resolved={}, actual resolved={}",
+                    sock.resolved.display(),
+                    cap.resolved.display(),
+                )));
+            }
+            caps.add_unix_socket(cap);
         }
 
         caps.set_network_blocked(self.net_blocked);
@@ -147,6 +215,48 @@ mod tests {
         assert!(
             state.to_caps().is_err(),
             "to_caps must reject invalid access modes"
+        );
+    }
+
+    #[test]
+    fn test_unix_socket_state_roundtrip_preserves_original_and_resolved() {
+        use tempfile::tempdir;
+        let dir = tempdir().expect("tempdir");
+        let sock = dir.path().join("a.sock");
+        std::fs::write(&sock, b"").expect("stub");
+
+        let caps = CapabilitySet::new()
+            .allow_unix_socket(&sock, UnixSocketMode::Connect)
+            .expect("grant");
+        let state = SandboxState::from_caps(&caps);
+        let restored = state.to_caps().expect("to_caps");
+
+        let round = restored.unix_socket_capabilities();
+        assert_eq!(round.len(), 1);
+        let before = &caps.unix_socket_capabilities()[0];
+        let after = &round[0];
+        assert_eq!(after.resolved, before.resolved);
+        assert_eq!(after.original, before.original);
+        assert_eq!(after.mode, before.mode);
+        assert_eq!(after.is_directory, before.is_directory);
+    }
+
+    #[test]
+    fn test_unix_socket_state_rejects_invalid_mode() {
+        let json = r#"{
+            "fs": [],
+            "unix_sockets": [{
+                "original": "/tmp",
+                "resolved": "/tmp",
+                "is_directory": true,
+                "mode": "bind-only"
+            }],
+            "net_blocked": false
+        }"#;
+        let state = SandboxState::from_json(json).unwrap();
+        assert!(
+            state.to_caps().is_err(),
+            "to_caps must reject unknown unix socket modes"
         );
     }
 }

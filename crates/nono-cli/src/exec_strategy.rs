@@ -14,6 +14,7 @@ mod env_sanitization;
 #[cfg(target_os = "linux")]
 mod supervisor_linux;
 
+use crate::startup_prompt::{print_terminal_safe_stderr, prompt_startup_termination_for_child};
 use crate::{DETACHED_CWD_PROMPT_RESPONSE_ENV, DETACHED_LAUNCH_ENV, DETACHED_SESSION_ID_ENV};
 use nix::libc;
 use nix::sys::signal::{self, Signal};
@@ -26,7 +27,6 @@ use nono::{
 };
 use std::collections::HashSet;
 use std::ffi::{CString, OsStr};
-use std::io::{self, BufRead, IsTerminal, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
@@ -70,90 +70,32 @@ const MAX_DENIAL_RECORDS: usize = 1000;
 /// Hard cap on request IDs tracked for replay detection.
 const MAX_TRACKED_REQUEST_IDS: usize = 4096;
 
-fn print_terminal_safe_stderr(message: &str) {
-    let mut stderr = io::stderr();
-    if stderr.is_terminal() {
-        let normalized = message.replace('\n', "\r\n");
-        let _ = writeln!(stderr, "\r{}", normalized);
-    } else {
-        let _ = writeln!(stderr, "{}", message);
-    }
-}
-
-fn prompt_startup_termination(timeout_cfg: StartupTimeoutConfig<'_>, has_output: bool) -> bool {
-    let description = if has_output {
-        format!(
-            "[nono] Startup appears blocked: `{}` has not become interactive after {} seconds.",
-            timeout_cfg.program,
-            timeout_cfg.timeout.as_secs()
-        )
-    } else {
-        format!(
-            "[nono] Startup appears blocked: `{}` produced no terminal output after {} seconds.",
-            timeout_cfg.program,
-            timeout_cfg.timeout.as_secs()
-        )
-    };
-
-    let tty_in = match std::fs::File::open("/dev/tty") {
-        Ok(file) => file,
-        Err(_) => {
-            print_terminal_safe_stderr(&format!(
-                "{}\n[nono] `{}` usually needs the built-in `{}` profile.\n[nono] Try: nono run --profile {} -- {}",
-                description,
-                timeout_cfg.program,
-                timeout_cfg.profile,
-                timeout_cfg.profile,
-                timeout_cfg.program,
-            ));
-            return false;
-        }
-    };
-
-    let mut tty_out = match std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        Ok(file) => file,
-        Err(_) => {
-            print_terminal_safe_stderr(&format!(
-                "{}\n[nono] `{}` usually needs the built-in `{}` profile.\n[nono] Try: nono run --profile {} -- {}",
-                description,
-                timeout_cfg.program,
-                timeout_cfg.profile,
-                timeout_cfg.profile,
-                timeout_cfg.program,
-            ));
-            return false;
-        }
-    };
-
-    let _ = writeln!(tty_out);
-    let _ = writeln!(tty_out, "{}", description);
-    let _ = writeln!(
-        tty_out,
-        "[nono] `{}` usually needs the built-in `{}` profile.",
-        timeout_cfg.program, timeout_cfg.profile
-    );
-    let _ = writeln!(
-        tty_out,
-        "[nono] Try: nono run --profile {} -- {}",
-        timeout_cfg.profile, timeout_cfg.program
-    );
-    let _ = write!(tty_out, "[nono] Do you wish to terminate? [y/N] ");
-    let _ = tty_out.flush();
-
-    let mut reader = io::BufReader::new(tty_in);
-    let mut input = String::new();
-    if reader.read_line(&mut input).is_err() {
-        let _ = writeln!(tty_out, "\n[nono] Continuing to wait.");
-        return false;
+fn offer_profile_save_for_child(
+    pty: Option<&mut crate::pty_proxy::PtyProxy>,
+    policy_explanations: &[nono::diagnostic::PolicyExplanation],
+    error_observation: &nono::diagnostic::ErrorObservation,
+    caps: &CapabilitySet,
+    command: &[String],
+    compared_profile: Option<&str>,
+) -> Result<()> {
+    if let Some(proxy) = pty {
+        let _released_terminal = proxy.release_terminal_for_prompt();
+        return crate::profile_save_runtime::offer_save_run_profile(
+            policy_explanations,
+            error_observation,
+            caps,
+            command,
+            compared_profile,
+        );
     }
 
-    let affirmative = matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes");
-    if affirmative {
-        let _ = writeln!(tty_out, "[nono] Terminating startup-blocked process.");
-    } else {
-        let _ = writeln!(tty_out, "[nono] Continuing to wait.");
-    }
-    affirmative
+    crate::profile_save_runtime::offer_save_run_profile(
+        policy_explanations,
+        error_observation,
+        caps,
+        command,
+        compared_profile,
+    )
 }
 
 /// Linux procfs context for resolving child-relative procfs paths in the supervisor.
@@ -258,6 +200,8 @@ pub struct ExecConfig<'a> {
     pub threading: ThreadingContext,
     /// Paths that are write-protected (signed instruction files).
     pub protected_paths: &'a [std::path::PathBuf],
+    /// Base profile name to derive a saved user patch from after run-time denials.
+    pub profile_save_base: Option<&'a str>,
     /// Optional startup timeout for known interactive CLIs that were launched
     /// without their recommended built-in profile.
     pub startup_timeout: Option<StartupTimeoutConfig<'a>>,
@@ -1091,7 +1035,13 @@ pub fn execute_supervised(
 
             #[cfg(target_os = "macos")]
             let sandbox_log_collector = if supervisor.is_some() {
-                crate::sandbox_log::SandboxLogCollector::start(child.as_raw())
+                let command_name = config
+                    .command
+                    .first()
+                    .and_then(|c| std::path::Path::new(c).file_name())
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string);
+                crate::sandbox_log::SandboxLogCollector::start(child.as_raw(), command_name)
             } else {
                 None
             };
@@ -1215,13 +1165,30 @@ pub fn execute_supervised(
                 #[cfg(not(target_os = "macos"))]
                 let sandbox_violations = Vec::new();
 
+                let diag_session_id = if supervisor.is_some() {
+                    pty_session_id
+                        .or_else(|| supervisor.map(|s| s.session_id))
+                        .map(str::to_string)
+                } else {
+                    None
+                };
+
+                // Resolve policy explanations for denied paths so the
+                // diagnostic can show group names and fix guidance inline.
+                let policy_explanations =
+                    build_policy_explanations(&denials, &sandbox_violations, config.caps);
+                let prompt_policy_explanations = policy_explanations.clone();
+                let prompt_error_observation = error_observation.clone();
+
                 let mut formatter = DiagnosticFormatter::new(config.caps)
                     .with_mode(mode)
                     .with_denials(&denials)
                     .with_sandbox_violations(&sandbox_violations)
                     .with_protected_paths(config.protected_paths)
                     .with_error_observation(error_observation)
-                    .with_current_dir(config.current_dir);
+                    .with_current_dir(config.current_dir)
+                    .with_session_id(diag_session_id)
+                    .with_policy_explanations(policy_explanations);
                 if let Some(program) = config.command.first() {
                     formatter = formatter.with_command(nono::diagnostic::CommandContext {
                         program: program.clone(),
@@ -1231,12 +1198,106 @@ pub fn execute_supervised(
                 }
                 let footer = formatter.format_footer(exit_code);
                 crate::output::print_diagnostic_footer(&footer);
+
+                if exit_code != 0 {
+                    // Clear the forwarding target before prompting. The child is
+                    // already dead; keeping CHILD_PID set would cause forward_signal
+                    // to send Ctrl-C to the dead PID, swallowing it silently.
+                    clear_signal_forwarding_target();
+                    offer_profile_save_for_child(
+                        pty_proxy.as_mut(),
+                        &prompt_policy_explanations,
+                        &prompt_error_observation,
+                        config.caps,
+                        config.command,
+                        config.profile_save_base,
+                    )?;
+                }
             }
 
             Ok(exit_code)
         }
         Err(e) => Err(NonoError::SandboxInit(format!("fork() failed: {}", e))),
     }
+}
+
+/// Resolve policy explanations for denied paths by querying `query_path`.
+///
+/// This runs the same logic as `nono why` but inline, so the diagnostic
+/// footer can show group names and fix guidance without asking the user
+/// to run a separate command.
+fn build_policy_explanations(
+    denials: &[nono::diagnostic::DenialRecord],
+    sandbox_violations: &[nono::SandboxViolation],
+    caps: &nono::CapabilitySet,
+) -> Vec<nono::diagnostic::PolicyExplanation> {
+    use nono::diagnostic::PolicyExplanation;
+    use nono::AccessMode;
+    use std::collections::BTreeMap;
+
+    // Merge access modes per path so a path denied for both Read and Write
+    // produces a single ReadWrite query. Querying each (path, mode) pair
+    // independently would let the first insert win and drop the other mode,
+    // yielding an incomplete "Fix:" suggestion.
+    let mut paths: BTreeMap<std::path::PathBuf, AccessMode> = BTreeMap::new();
+
+    let merge = |existing: AccessMode, incoming: AccessMode| -> AccessMode {
+        if existing == incoming {
+            existing
+        } else {
+            AccessMode::ReadWrite
+        }
+    };
+
+    for denial in denials {
+        paths
+            .entry(denial.path.clone())
+            .and_modify(|a| *a = merge(*a, denial.access))
+            .or_insert(denial.access);
+    }
+
+    for violation in sandbox_violations {
+        let Some(access) = nono::diagnostic::seatbelt_operation_to_access(&violation.operation)
+        else {
+            continue;
+        };
+        let Some(target) = violation.target.as_ref() else {
+            continue;
+        };
+        paths
+            .entry(std::path::PathBuf::from(target))
+            .and_modify(|a| *a = merge(*a, access))
+            .or_insert(access);
+    }
+
+    let mut explanations = Vec::new();
+    for (path, access) in paths {
+        match crate::query_ext::query_path(&path, access, caps, &[]) {
+            Ok(crate::query_ext::QueryResult::Denied {
+                reason,
+                details,
+                policy_source,
+                suggested_flag,
+                ..
+            }) => {
+                explanations.push(PolicyExplanation {
+                    path,
+                    access,
+                    reason,
+                    details,
+                    policy_source,
+                    suggested_flag,
+                });
+            }
+            Ok(crate::query_ext::QueryResult::Allowed { .. }) => {
+                // Path is actually allowed by policy — the denial came from
+                // a different layer (e.g. Landlock timing). Skip.
+            }
+            Ok(crate::query_ext::QueryResult::NotSandboxed { .. }) | Err(_) => {}
+        }
+    }
+
+    explanations
 }
 
 /// Close inherited file descriptors, keeping stdin/stdout/stderr and specified FDs.
@@ -1344,11 +1405,12 @@ fn wait_for_child_with_pty(
                     let has_output = pty.has_observed_output();
                     if Instant::now() >= deadline && !has_output && !startup_prompted {
                         startup_prompted = true;
-                        let paused_terminal = pty.pause_terminal_for_prompt();
-                        let terminate = prompt_startup_termination(timeout_cfg, has_output);
-                        if paused_terminal {
-                            pty.resume_terminal_after_prompt();
-                        }
+                        let terminate = prompt_startup_termination_for_child(
+                            child,
+                            timeout_cfg,
+                            has_output,
+                            Some(pty),
+                        );
                         if terminate {
                             let _ = signal::kill(child, Signal::SIGKILL);
                             let status = wait_for_child(child)?;
@@ -1390,7 +1452,7 @@ fn wait_for_child_with_startup_timeout(
                 if let Some((deadline, timeout_cfg)) = startup_deadline {
                     if Instant::now() >= deadline && !startup_prompted {
                         startup_prompted = true;
-                        if prompt_startup_termination(timeout_cfg, true) {
+                        if prompt_startup_termination_for_child(child, timeout_cfg, true, None) {
                             let _ = signal::kill(child, Signal::SIGKILL);
                             return wait_for_child(child);
                         }
@@ -1560,6 +1622,20 @@ extern "C" fn forward_signal(sig: libc::c_int) {
             unsafe {
                 libc::kill(child_raw, sig);
             }
+        }
+    } else if matches!(
+        sig,
+        libc::SIGINT | libc::SIGTERM | libc::SIGHUP | libc::SIGQUIT
+    ) {
+        // No child to forward to (e.g. during the post-exit profile-save prompt).
+        // For termination signals, restore the default handler and re-raise so
+        // the signal takes its default action (terminating nono) rather than
+        // being swallowed. Non-termination signals (SIGWINCH, SIGUSR1) are
+        // ignored here — their forwarding targets (PTY master, pause pipe) are
+        // already torn down.
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
         }
     }
 }
@@ -1805,15 +1881,12 @@ fn run_supervisor_loop(
                     let has_output = pty.as_ref().is_some_and(|p| p.has_observed_output());
                     if Instant::now() >= deadline && !has_output && !startup_prompted {
                         startup_prompted = true;
-                        let paused_terminal = pty
-                            .as_mut()
-                            .is_some_and(|proxy| proxy.pause_terminal_for_prompt());
-                        let terminate = prompt_startup_termination(timeout_cfg, has_output);
-                        if let Some(proxy) = pty.as_mut() {
-                            if paused_terminal {
-                                proxy.resume_terminal_after_prompt();
-                            }
-                        }
+                        let terminate = prompt_startup_termination_for_child(
+                            child,
+                            timeout_cfg,
+                            has_output,
+                            pty.as_deref_mut(),
+                        );
                         if terminate {
                             let _ = signal::kill(child, Signal::SIGKILL);
                             return Ok((wait_for_child(child)?, denials));
@@ -2052,15 +2125,12 @@ fn run_supervisor_loop(
                     let has_output = pty.as_ref().is_some_and(|p| p.has_observed_output());
                     if Instant::now() >= deadline && !has_output && !startup_prompted {
                         startup_prompted = true;
-                        let paused_terminal = pty
-                            .as_mut()
-                            .is_some_and(|proxy| proxy.pause_terminal_for_prompt());
-                        let terminate = prompt_startup_termination(timeout_cfg, has_output);
-                        if let Some(proxy) = pty.as_mut() {
-                            if paused_terminal {
-                                proxy.resume_terminal_after_prompt();
-                            }
-                        }
+                        let terminate = prompt_startup_termination_for_child(
+                            child,
+                            timeout_cfg,
+                            has_output,
+                            pty.as_deref_mut(),
+                        );
                         if terminate {
                             let _ = signal::kill(child, Signal::SIGTERM);
                             return Ok((wait_for_child(child)?, denials));
@@ -3066,6 +3136,9 @@ fn open_canonical_path_no_symlinks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nix::sys::termios::{
+        ControlFlags, InputFlags, LocalFlags, OutputFlags, SpecialCharacterIndices,
+    };
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -3079,6 +3152,44 @@ mod tests {
     #[test]
     fn test_exec_strategy_default_is_supervised() {
         assert_eq!(ExecStrategy::default(), ExecStrategy::Supervised);
+    }
+
+    #[test]
+    fn test_configure_startup_prompt_termios_restores_cooked_input() {
+        let mut termios = unsafe { std::mem::zeroed::<nix::sys::termios::Termios>() };
+        termios.input_flags = InputFlags::IGNBRK | InputFlags::INLCR | InputFlags::IGNCR;
+        termios.output_flags = OutputFlags::empty();
+        termios.local_flags = LocalFlags::empty();
+        termios.control_flags = ControlFlags::CSIZE | ControlFlags::PARENB;
+        termios.control_chars[SpecialCharacterIndices::VMIN as usize] = 0;
+        termios.control_chars[SpecialCharacterIndices::VTIME as usize] = 9;
+
+        crate::profile_save_runtime::configure_prompt_termios(&mut termios);
+
+        assert!(termios
+            .input_flags
+            .contains(InputFlags::ICRNL | InputFlags::IXON));
+        assert!(!termios
+            .input_flags
+            .intersects(InputFlags::IGNBRK | InputFlags::INLCR | InputFlags::IGNCR));
+        assert!(termios.output_flags.contains(OutputFlags::OPOST));
+        assert!(termios.local_flags.contains(
+            LocalFlags::ECHO
+                | LocalFlags::ECHONL
+                | LocalFlags::ICANON
+                | LocalFlags::ISIG
+                | LocalFlags::IEXTEN
+        ));
+        assert!(!termios.control_flags.contains(ControlFlags::PARENB));
+        assert!(termios.control_flags.contains(ControlFlags::CS8));
+        assert_eq!(
+            termios.control_chars[SpecialCharacterIndices::VMIN as usize],
+            1
+        );
+        assert_eq!(
+            termios.control_chars[SpecialCharacterIndices::VTIME as usize],
+            0
+        );
     }
 
     #[test]
