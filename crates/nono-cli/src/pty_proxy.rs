@@ -1906,6 +1906,22 @@ where
     // behind. Then put termios back into cooked mode so the subsequent
     // detach notice renders with proper \r\n handling.
     let clear_on_restore = !alt_screen_tracker.in_alt_screen;
+    if clear_on_restore {
+        // Before we clear, push the current viewport into the native
+        // scrollback via SU (DEC Scroll Up) so the user can reach the full
+        // final view of the session by scrolling back after detach.
+        // Without this, TUIs like Claude Code that paint in place never
+        // cause the viewport to scroll out of the top during live use, so
+        // those lines never entered native scrollback — and the clear
+        // would wipe them permanently. With SU they land in scrollback
+        // first, then the clear operates on an empty viewport.
+        if let Some(winsize) = get_terminal_winsize() {
+            if winsize.ws_row > 0 {
+                let scroll_up = format!("\x1b[{}S", winsize.ws_row);
+                let _ = write_all_fd(libc::STDOUT_FILENO, scroll_up.as_bytes());
+            }
+        }
+    }
     let _ = write_all_fd(
         libc::STDOUT_FILENO,
         terminal_restore_escape(clear_on_restore),
