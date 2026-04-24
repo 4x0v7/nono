@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.41.0] - 2026-04-24
+
+### Bug Fixes
+
+- *(cli)* Improve attach/detach scrollback and alt-screen
+
+- *(pty-proxy)* Ensure full scrollback on reattach for normal screen
+
+- *(cli)* Improve profile save resilience and policy suggestions
+
+- *(signals)* Prevent signal swallowing
+
+
+### Features
+
+- *(pty-proxy)* Scroll viewport to native scrollback on detach
+
+- *(pty)* Enhance detach notice and terminal cleanup
+
+- *(pty)* Preserve outer terminal scrollback on attach
+
+- *(cli)* Consolidate 'nono policy' subcommands under 'nono profile' with deprecation alias (#594)
+
+- *(cli)* Enhance prompts and denial diagnostics
+
+- *(cli)* Improve denial diagnostics and profile saving workflow
+
+
+### Refactoring
+
+- *(cli-startup-prompt)* Extract startup prompt functions
+
 ## [0.40.1] - 2026-04-23
 
 ### Bug Fixes
