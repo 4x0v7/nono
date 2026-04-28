@@ -969,6 +969,14 @@ pub struct SandboxArgs {
     )]
     pub allow_port: Vec<u16>,
 
+    /// Allow outbound TCP connect to a specific port (repeatable; Linux Landlock V4+ only)
+    #[arg(
+        long = "allow-connect-port",
+        value_name = "PORT",
+        help_heading = "NETWORK"
+    )]
+    pub allow_connect_port: Vec<u16>,
+
     /// Chain outbound traffic through an upstream proxy (host:port)
     #[arg(
         long = "upstream-proxy",
@@ -1075,7 +1083,7 @@ pub struct SandboxArgs {
             "allow_unix_socket_dir", "allow_unix_socket_dir_bind",
             "profile", "override_deny", "allow_cwd",
             "block_net", "allow_net", "network_profile", "allow_proxy",
-            "allow_bind", "allow_port", "external_proxy", "proxy_port",
+            "allow_bind", "allow_port", "allow_connect_port", "external_proxy", "proxy_port",
             "proxy_credential", "allow_endpoint", "env_credential", "env_credential_map",
             "allow_command", "block_command", "allow_launch_services", "allow_gpu",
         ],
@@ -1202,6 +1210,14 @@ pub struct WrapSandboxArgs {
     )]
     pub allow_port: Vec<u16>,
 
+    /// Allow outbound TCP connect to a specific port (repeatable; Linux Landlock V4+ only)
+    #[arg(
+        long = "allow-connect-port",
+        value_name = "PORT",
+        help_heading = "NETWORK"
+    )]
+    pub allow_connect_port: Vec<u16>,
+
     // ── Credentials ──────────────────────────────────────────────────────
     /// Load credentials as env vars
     #[arg(
@@ -1261,7 +1277,7 @@ pub struct WrapSandboxArgs {
             "allow_unix_socket", "allow_unix_socket_bind",
             "allow_unix_socket_dir", "allow_unix_socket_dir_bind",
             "profile", "override_deny", "allow_cwd",
-            "block_net", "allow_bind", "allow_port",
+            "block_net", "allow_bind", "allow_port", "allow_connect_port",
             "env_credential", "env_credential_map",
             "allow_command", "block_command", "allow_launch_services", "allow_gpu",
         ],
@@ -1300,6 +1316,7 @@ impl From<WrapSandboxArgs> for SandboxArgs {
             allow_proxy: Vec::new(),
             allow_bind: args.allow_bind,
             allow_port: args.allow_port,
+            allow_connect_port: args.allow_connect_port,
             external_proxy: None,
             external_proxy_bypass: Vec::new(),
             proxy_port: None,

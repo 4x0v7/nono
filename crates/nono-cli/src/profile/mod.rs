@@ -870,6 +870,10 @@ pub struct NetworkConfig {
     /// Equivalent to `--listen-port` CLI flag.
     #[serde(default)]
     pub listen_port: Vec<u16>,
+    /// Outbound TCP connect ports (allowlist). Linux Landlock V4+ only.
+    /// Equivalent to `--allow-connect-port` CLI flag.
+    #[serde(default)]
+    pub connect_port: Vec<u16>,
     /// Custom credential definitions for services not in network-policy.json.
     /// Keys are service names (used with `--credential`), values define
     /// how to route and inject credentials for that service.
@@ -1838,6 +1842,7 @@ fn merge_profiles(base: Profile, child: Profile) -> Profile {
             allow_domain: dedup_append(&base.network.allow_domain, &child.network.allow_domain),
             open_port: dedup_append(&base.network.open_port, &child.network.open_port),
             listen_port: dedup_append(&base.network.listen_port, &child.network.listen_port),
+            connect_port: dedup_append(&base.network.connect_port, &child.network.connect_port),
             // Child `Some([])` overrides parent credentials to empty (disables proxy).
             // Child `None` inherits parent credentials. Child `Some([...])` merges with parent.
             credentials: match child.network.credentials {
@@ -3449,6 +3454,7 @@ mod tests {
                 allow_domain: vec!["base.example.com".to_string()],
                 open_port: vec![3000],
                 listen_port: vec![4000],
+                connect_port: vec![],
                 credentials: Some(vec!["base_cred".to_string()]),
                 custom_credentials: HashMap::new(),
                 upstream_proxy: None,
@@ -3527,6 +3533,7 @@ mod tests {
                 allow_domain: vec!["child.example.com".to_string()],
                 open_port: vec![3000, 5000],
                 listen_port: vec![4000, 6000],
+                connect_port: vec![],
                 credentials: None,
                 custom_credentials: HashMap::new(),
                 upstream_proxy: None,

@@ -536,6 +536,20 @@ impl CapabilitySetExt for CapabilitySet {
             caps.add_localhost_port(*port);
         }
 
+        // Outbound TCP connect port allowlist (Linux Landlock V4+ only)
+        #[cfg(target_os = "macos")]
+        if !args.allow_connect_port.is_empty() {
+            return Err(NonoError::UnsupportedPlatform(
+                "--allow-connect-port is not supported on macOS: Seatbelt cannot filter by TCP port. \
+                 Use --allow-domain for host-level filtering, or ProxyOnly mode."
+                    .to_string(),
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        for port in &args.allow_connect_port {
+            caps.add_tcp_connect_port(*port);
+        }
+
         // Command allow/block lists
         for cmd in &args.allow_command {
             caps.add_allowed_command(cmd.clone());
@@ -872,6 +886,20 @@ impl CapabilitySetExt for CapabilitySet {
             caps.add_localhost_port(*port);
         }
 
+        // Outbound TCP connect port allowlist from profile (Linux Landlock V4+ only)
+        #[cfg(target_os = "macos")]
+        if !profile.network.connect_port.is_empty() {
+            return Err(NonoError::UnsupportedPlatform(
+                "profile `connect_port` is not supported on macOS: Seatbelt cannot filter by TCP \
+                 port. Use `allow_domain` for host-level filtering, or ProxyOnly mode."
+                    .to_string(),
+            ));
+        }
+        #[cfg(not(target_os = "macos"))]
+        for port in &profile.network.connect_port {
+            caps.add_tcp_connect_port(*port);
+        }
+
         // Apply allowed commands from profile
         for cmd in &profile.security.allowed_commands {
             caps.add_allowed_command(cmd.as_str());
@@ -1047,6 +1075,20 @@ fn add_cli_overrides(
     // Localhost IPC ports from CLI
     for port in &args.allow_port {
         caps.add_localhost_port(*port);
+    }
+
+    // Outbound TCP connect port allowlist from CLI (Linux Landlock V4+ only)
+    #[cfg(target_os = "macos")]
+    if !args.allow_connect_port.is_empty() {
+        return Err(NonoError::UnsupportedPlatform(
+            "--allow-connect-port is not supported on macOS: Seatbelt cannot filter by TCP port. \
+             Use --allow-domain for host-level filtering, or ProxyOnly mode."
+                .to_string(),
+        ));
+    }
+    #[cfg(not(target_os = "macos"))]
+    for port in &args.allow_connect_port {
+        caps.add_tcp_connect_port(*port);
     }
 
     // Command allow/block from CLI
@@ -2250,6 +2292,108 @@ mod tests {
             regex_escape_path("/Users/me/.claude.json"),
             "/Users/me/\\.claude\\.json"
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn test_from_args_allow_connect_port_populates_tcp_connect_ports() {
+        let args = SandboxArgs {
+            allow_connect_port: vec![443, 80, 5432],
+            ..sandbox_args()
+        };
+
+        let (caps, _) = from_args_locked(&args).expect("build caps");
+        assert_eq!(caps.tcp_connect_ports(), &[443, 80, 5432]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_from_args_allow_connect_port_errors_on_macos() {
+        let args = SandboxArgs {
+            allow_connect_port: vec![443],
+            ..sandbox_args()
+        };
+        let err = from_args_locked(&args).expect_err("should fail on macOS");
+        assert!(
+            err.to_string().contains("not supported on macOS"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn test_from_profile_connect_port_populates_tcp_connect_ports() {
+        let dir = tempdir().expect("tmpdir");
+        let profile_path = dir.path().join("connect-port-profile.json");
+        std::fs::write(
+            &profile_path,
+            r#"{
+                "meta": { "name": "connect-port-profile" },
+                "network": { "connect_port": [443, 5432] }
+            }"#,
+        )
+        .expect("write profile");
+        let profile = crate::profile::load_profile_from_path(&profile_path).expect("load profile");
+
+        let workdir = tempdir().expect("workdir");
+        let args = sandbox_args();
+
+        let (caps, _) = from_profile_locked(&profile, workdir.path(), &args).expect("build caps");
+        assert_eq!(caps.tcp_connect_ports(), &[443, 5432]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_from_profile_connect_port_errors_on_macos() {
+        let dir = tempdir().expect("tmpdir");
+        let profile_path = dir.path().join("connect-port-profile.json");
+        std::fs::write(
+            &profile_path,
+            r#"{
+                "meta": { "name": "connect-port-profile" },
+                "network": { "connect_port": [443] }
+            }"#,
+        )
+        .expect("write profile");
+        let profile = crate::profile::load_profile_from_path(&profile_path).expect("load profile");
+
+        let workdir = tempdir().expect("workdir");
+        let args = sandbox_args();
+
+        let err =
+            from_profile_locked(&profile, workdir.path(), &args).expect_err("should fail on macOS");
+        assert!(
+            err.to_string().contains("not supported on macOS"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn test_cli_allow_connect_port_overrides_profile_connect_port() {
+        let dir = tempdir().expect("tmpdir");
+        let profile_path = dir.path().join("connect-port-override.json");
+        std::fs::write(
+            &profile_path,
+            r#"{
+                "meta": { "name": "connect-port-override" },
+                "network": { "connect_port": [443] }
+            }"#,
+        )
+        .expect("write profile");
+        let profile = crate::profile::load_profile_from_path(&profile_path).expect("load profile");
+
+        let workdir = tempdir().expect("workdir");
+        let args = SandboxArgs {
+            allow_connect_port: vec![5432],
+            ..sandbox_args()
+        };
+
+        let (caps, _) = from_profile_locked(&profile, workdir.path(), &args).expect("build caps");
+        // Both profile and CLI ports should be present
+        let ports = caps.tcp_connect_ports();
+        assert!(ports.contains(&443), "profile port 443 should be present");
+        assert!(ports.contains(&5432), "CLI port 5432 should be present");
     }
 
     #[test]
