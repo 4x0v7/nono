@@ -1604,6 +1604,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sigstore-trust-root",
  "sigstore-verify",
  "syn",
  "tempfile",
@@ -2750,9 +2751,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-sign"
-version = "0.6.5"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ecc951910318de1475041aa6a749f0a0671cfc82c14ae458df25cf93944cacf"
+checksum = "16ed4d064dde5d3033322b6d201b93e853141756a9d0a03e83cac517a861866a"
 dependencies = [
  "base64",
  "serde_json",
@@ -2770,9 +2771,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-trust-root"
-version = "0.6.5"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fa1be3a70fdefac1156561f70b44263601dce6ca8ce7022c0c51b142ec0138f"
+checksum = "ee8762a4813252faffdf6f7e2040213078eb2482fbc351381134f3fc60c1be9c"
 dependencies = [
  "base64",
  "chrono",
@@ -2829,9 +2830,9 @@ dependencies = [
 
 [[package]]
 name = "sigstore-verify"
-version = "0.6.5"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "056618bdcc8d8b015f97f49602f95e6adf4ee851eb777d11a01241cdc40f5abe"
+checksum = "6d751d608afd334fb9d8c037ad9efef69f1954494eff99cd79a0a6fc8af34ccb"
 dependencies = [
  "base64",
  "chrono",

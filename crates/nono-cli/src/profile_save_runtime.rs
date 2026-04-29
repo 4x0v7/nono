@@ -27,7 +27,20 @@ struct PatchGrant {
     override_deny: bool,
 }
 
+/// Env var that suppresses the "save denied paths as user profile?"
+/// prompt entirely. Set by integration tests and CI runs that have an
+/// openable `/dev/tty` (so `terminal_prompts_available` would otherwise
+/// return true) but no human to answer. Mirrors the `NONO_NO_MIGRATE`
+/// escape hatch on the migration prompt.
+const ENV_NO_SAVE_PROMPT: &str = "NONO_NO_SAVE_PROMPT";
+
 pub(crate) fn terminal_prompts_available() -> bool {
+    if matches!(
+        std::env::var(ENV_NO_SAVE_PROMPT).ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ) {
+        return false;
+    }
     std::io::stdin().is_terminal()
         || std::io::stderr().is_terminal()
         || std::fs::File::open("/dev/tty").is_ok()
